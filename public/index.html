@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="pl" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Loop Maker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface: {
+              50: '#f4f6f8',
+              100: '#e8ecf1',
+              800: '#1a1f27',
+              900: '#12161c',
+              950: '#0b0e12',
+            },
+            accent: {
+              DEFAULT: '#3d9b8f',
+              hover: '#4db3a6',
+              muted: '#2a6f67',
+            },
+          },
+          fontFamily: {
+            sans: ['"Segoe UI"', 'system-ui', 'sans-serif'],
+            mono: ['Consolas', '"Courier New"', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    :root, [data-theme="dark"] {
+      --bg: #0b0e12;
+      --bg-elevated: #12161c;
+      --bg-panel: #1a1f27;
+      --border: #2a323e;
+      --text: #e8ecf1;
+      --text-muted: #8b95a5;
+      --accent: #3d9b8f;
+      --accent-hover: #4db3a6;
+      --danger: #e06c75;
+      --track: #2a323e;
+      --range: #3d9b8f;
+    }
+    [data-theme="light"] {
+      --bg: #f0f2f5;
+      --bg-elevated: #ffffff;
+      --bg-panel: #ffffff;
+      --border: #d0d7e0;
+      --text: #1a1f27;
+      --text-muted: #5c6b7a;
+      --accent: #2a7d72;
+      --accent-hover: #3d9b8f;
+      --danger: #c44c56;
+      --track: #d0d7e0;
+      --range: #2a7d72;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    .dropzone {
+      border: 2px dashed var(--border);
+      background: var(--bg-elevated);
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--track);
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--range);
+      cursor: pointer;
+      border: 2px solid var(--bg-panel);
+      box-shadow: 0 0 0 1px var(--range);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--range);
+      cursor: pointer;
+      border: 2px solid var(--bg-panel);
+    }
+    .field {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+      width: 100%;
+    }
+    .field:focus {
+      outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+      border-color: var(--accent);
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      border-radius: 8px;
+      font-weight: 600;
+      padding: 0.65rem 1.25rem;
+      transition: background 0.15s, opacity 0.15s;
+      cursor: pointer;
+      border: none;
+    }
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .progress-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--track);
+      overflow: hidden;
+    }
+    .progress-bar > div {
+      height: 100%;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.2s ease;
+    }
+    .waveform {
+      height: 64px;
+      border-radius: 8px;
+      background: var(--bg-elevated);
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .waveform canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .region {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      border-left: 2px solid var(--accent);
+      border-right: 2px solid var(--accent);
+      pointer-events: none;
+    }
+    .playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #e8b84a;
+      pointer-events: none;
+      display: none;
+    }
+    .muted { color: var(--text-muted); }
+    .label { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.35rem; }
+    audio { width: 100%; height: 36px; }
+    .theme-toggle {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+  </style>
+</head>
+<body class="font-sans antialiased">
+  <div class="max-w-3xl mx-auto px-4 py-8 sm:py-12">
+    <header class="flex items-start justify-between gap-4 mb-8">
+      <div>
+        <h1 class="text-2xl sm:text-3xl font-semibold tracking-tight">Audio Loop Maker</h1>
+        <p class="muted mt-1 text-sm sm:text-base">Twórz płynne pętle audio z crossfade · OGG / WAV</p>
+      </div>
+      <button type="button" class="theme-toggle" id="themeToggle" title="Przełącz motyw" aria-label="Przełącz motyw">
+        <svg id="iconSun" class="hidden w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M12 3v2.25M12 18.75V21M4.5 12H2.25M21.75 12H19.5M6.34 6.34 4.75 4.75M19.25 19.25l-1.59-1.59M6.34 17.66l-1.59 1.59M19.25 4.75l-1.59 1.59M16.5 12a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/></svg>
+        <svg id="iconMoon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+      </button>
+    </header>
+
+    <!-- Upload -->
+    <section class="panel p-5 sm:p-6 mb-5">
+      <div class="label">Plik źródłowy</div>
+      <div id="dropzone" class="dropzone rounded-xl p-8 text-center cursor-pointer">
+        <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.wma,.aiff,.opus" class="hidden" />
+        <div id="dropIdle">
+          <svg class="w-10 h-10 mx-auto mb-3 muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg>
+          <p class="font-medium">Przeciągnij plik audio tutaj</p>
+          <p class="muted text-sm mt-1">lub kliknij, aby wybrać · MP3, WAV, OGG, FLAC… · bez limitu rozmiaru</p>
+          <button type="button" class="btn btn-primary mt-4" id="pickBtn">Wybierz plik audio</button>
+        </div>
+        <div id="dropLoaded" class="hidden text-left">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="font-medium truncate max-w-md" id="fileName">—</p>
+              <p class="muted text-sm mt-0.5" id="fileMeta">—</p>
+            </div>
+            <button type="button" class="btn btn-ghost text-sm" id="changeBtn">Zmień plik</button>
+          </div>
+        </div>
+      </div>
+      <div id="uploadProgress" class="hidden mt-4">
+        <div class="flex justify-between text-sm mb-1">
+          <span class="muted">Wysyłanie…</span>
+          <span id="uploadPct">0%</span>
+        </div>
+        <div class="progress-bar"><div id="uploadBar"></div></div>
+      </div>
+    </section>
+
+    <!-- Player + region -->
+    <section id="editorSection" class="panel p-5 sm:p-6 mb-5 opacity-50 pointer-events-none">
+      <div class="label">Podgląd i region pętli</div>
+      <div class="waveform mb-3" id="waveform">
+        <canvas id="waveCanvas"></canvas>
+        <div class="region" id="region"></div>
+        <div class="playhead" id="playhead"></div>
+      </div>
+      <audio id="player" controls preload="metadata" class="mb-4"></audio>
+
+      <div class="flex flex-wrap gap-2 mb-5">
+        <button type="button" class="btn btn-ghost text-sm" id="playRegionBtn" title="Odtwórz wybrany fragment">▶ Fragment</button>
+        <button type="button" class="btn btn-ghost text-sm" id="loopPreviewBtn" title="Zapętlaj fragment w przeglądarce">↻ Podgląd pętli</button>
+        <button type="button" class="btn btn-ghost text-sm" id="stopBtn">Stop</button>
+      </div>
+
+      <div class="grid sm:grid-cols-2 gap-4 mb-4">
+        <div>
+          <div class="label">Start Time</div>
+          <input type="range" id="startSlider" min="0" max="100" step="0.001" value="0" />
+          <div class="flex items-center gap-2 mt-2">
+            <input type="text" class="field font-mono text-sm" id="startInput" value="0.000" />
+            <span class="muted text-sm">s</span>
+          </div>
+        </div>
+        <div>
+          <div class="label">End Time</div>
+          <input type="range" id="endSlider" min="0" max="100" step="0.001" value="100" />
+          <div class="flex items-center gap-2 mt-2">
+            <input type="text" class="field font-mono text-sm" id="endInput" value="0.000" />
+            <span class="muted text-sm">s</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div>
+          <div class="label">Crossfade Duration</div>
+          <input type="range" id="crossfadeSlider" min="0" max="5000" step="10" value="50" />
+          <div class="flex items-center gap-2 mt-2">
+            <input type="number" class="field font-mono text-sm" id="crossfadeInput" min="0" max="5000" step="10" value="50" />
+            <span class="muted text-sm">ms</span>
+          </div>
+          <p class="muted text-xs mt-1">0–5000 ms · nakłada koniec fragmentu na początek</p>
+        </div>
+        <div>
+          <div class="label">Powtórzenia wyjścia</div>
+          <input type="range" id="repeatsSlider" min="1" max="20" step="1" value="1" />
+          <div class="flex items-center gap-2 mt-2">
+            <input type="number" class="field font-mono text-sm" id="repeatsInput" min="1" max="100" step="1" value="1" />
+            <span class="muted text-sm">×</span>
+          </div>
+          <p class="muted text-xs mt-1">1 = pojedynczy blok pętli · &gt;1 = plik zapętlony X razy</p>
+        </div>
+      </div>
+
+      <div class="mt-4 flex flex-wrap items-center gap-4">
+        <div>
+          <div class="label">Format wyjściowy</div>
+          <div class="flex gap-2">
+            <label class="btn btn-ghost text-sm cursor-pointer">
+              <input type="radio" name="format" value="ogg" checked class="mr-1" /> .ogg (Vorbis)
+            </label>
+            <label class="btn btn-ghost text-sm cursor-pointer">
+              <input type="radio" name="format" value="wav" class="mr-1" /> .wav
+            </label>
+          </div>
+        </div>
+        <div class="sm:ml-auto text-sm muted" id="segmentInfo">Segment: —</div>
+      </div>
+    </section>
+
+    <!-- Generate -->
+    <section id="generateSection" class="panel p-5 sm:p-6 opacity-50 pointer-events-none">
+      <button type="button" class="btn btn-primary w-full text-base py-3" id="generateBtn">
+        Generuj i pobierz pętlę
+      </button>
+      <div id="genProgress" class="hidden mt-4">
+        <div class="flex justify-between text-sm mb-1">
+          <span class="muted" id="genStatus">Przetwarzanie…</span>
+          <span id="genPct">0%</span>
+        </div>
+        <div class="progress-bar"><div id="genBar"></div></div>
+      </div>
+      <div id="resultBox" class="hidden mt-4 p-4 rounded-lg" style="background: var(--bg-elevated); border: 1px solid var(--border);">
+        <p class="font-medium text-sm mb-2">Pętla gotowa</p>
+        <p class="muted text-sm mb-3" id="resultMeta">—</p>
+        <a id="downloadLink" class="btn btn-primary" href="#" download>Pobierz plik</a>
+      </div>
+      <p id="errorBox" class="hidden mt-3 text-sm" style="color: var(--danger);"></p>
+    </section>
+
+    <footer class="mt-8 text-center text-xs muted">
+      Działa lokalnie · FFmpeg · bez limitu rozmiaru pliku
+    </footer>
+  </div>
+
+  <script>
+    (() => {
+      const $ = (id) => document.getElementById(id);
+
+      const state = {
+        filename: null,
+        originalName: null,
+        duration: 0,
+        start: 0,
+        end: 0,
+        crossfadeMs: 50,
+        repeats: 1,
+        looping: false,
+        audioBuffer: null,
+        uploading: false,
+        generating: false,
+      };
+
+      const player = $('player');
+      const dropzone = $('dropzone');
+      const fileInput = $('fileInput');
+
+      // --- Theme ---
+      function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('alm-theme', theme);
+        $('iconSun').classList.toggle('hidden', theme !== 'light');
+        $('iconMoon').classList.toggle('hidden', theme !== 'dark');
+        drawWaveform();
+      }
+      $('themeToggle').addEventListener('click', () => {
+        const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+      });
+      applyTheme(localStorage.getItem('alm-theme') || 'dark');
+
+      function formatTime(sec) {
+        if (!Number.isFinite(sec)) return '0.000';
+        return sec.toFixed(3);
+      }
+
+      function formatBytes(n) {
+        if (n < 1024) return n + ' B';
+        if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+        return (n / 1048576).toFixed(2) + ' MB';
+      }
+
+      function formatDuration(sec) {
+        const m = Math.floor(sec / 60);
+        const s = (sec % 60).toFixed(2);
+        return m > 0 ? `${m}:${s.padStart(5, '0')}` : `${Number(s).toFixed(2)} s`;
+      }
+
+      function enableEditor(on) {
+        $('editorSection').classList.toggle('opacity-50', !on);
+        $('editorSection').classList.toggle('pointer-events-none', !on);
+        $('generateSection').classList.toggle('opacity-50', !on);
+        $('generateSection').classList.toggle('pointer-events-none', !on);
+      }
+
+      function updateSegmentInfo() {
+        const len = Math.max(0, state.end - state.start);
+        const cf = state.crossfadeMs / 1000;
+        const outLen = Math.max(0, len - (cf > 0.001 ? cf : 0)) * state.repeats;
+        $('segmentInfo').textContent =
+          `Segment: ${formatDuration(len)} → wyjście ≈ ${formatDuration(outLen)}`;
+        updateRegionUI();
+      }
+
+      function updateRegionUI() {
+        if (!state.duration) return;
+        const region = $('region');
+        const left = (state.start / state.duration) * 100;
+        const width = ((state.end - state.start) / state.duration) * 100;
+        region.style.left = left + '%';
+        region.style.width = Math.max(0, width) + '%';
+      }
+
+      function syncSlidersFromState() {
+        const d = state.duration || 1;
+        $('startSlider').max = d;
+        $('endSlider').max = d;
+        $('startSlider').value = state.start;
+        $('endSlider').value = state.end;
+        $('startInput').value = formatTime(state.start);
+        $('endInput').value = formatTime(state.end);
+        $('crossfadeSlider').value = state.crossfadeMs;
+        $('crossfadeInput').value = state.crossfadeMs;
+        $('repeatsSlider').value = Math.min(20, state.repeats);
+        $('repeatsInput').value = state.repeats;
+        updateSegmentInfo();
+      }
+
+      function clampRegion() {
+        const d = state.duration;
+        state.start = Math.max(0, Math.min(state.start, d));
+        state.end = Math.max(0, Math.min(state.end, d));
+        if (state.end <= state.start) {
+          state.end = Math.min(d, state.start + 0.05);
+        }
+        const maxCf = Math.max(0, Math.floor(((state.end - state.start) / 2 - 0.01) * 1000));
+        if (state.crossfadeMs > maxCf) {
+          state.crossfadeMs = Math.max(0, maxCf);
+        }
+      }
+
+      // --- Waveform (prosty peaki z AudioContext) ---
+      async function loadWaveformPeaks(arrayBuffer) {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const copy = arrayBuffer.slice(0);
+          state.audioBuffer = await ctx.decodeAudioData(copy);
+          ctx.close();
+          drawWaveform();
+        } catch {
+          state.audioBuffer = null;
+          drawWaveform();
+        }
+      }
+
+      function drawWaveform() {
+        const canvas = $('waveCanvas');
+        const wrap = $('waveform');
+        const dpr = window.devicePixelRatio || 1;
+        const w = wrap.clientWidth;
+        const h = wrap.clientHeight;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        const g = canvas.getContext('2d');
+        g.scale(dpr, dpr);
+        g.clearRect(0, 0, w, h);
+
+        const styles = getComputedStyle(document.documentElement);
+        const muted = styles.getPropertyValue('--text-muted').trim() || '#8b95a5';
+        const accent = styles.getPropertyValue('--accent').trim() || '#3d9b8f';
+
+        if (!state.audioBuffer) {
+          g.fillStyle = muted;
+          g.globalAlpha = 0.35;
+          for (let x = 0; x < w; x += 3) {
+            const amp = 8 + Math.sin(x * 0.08) * 6 + Math.sin(x * 0.02) * 10;
+            g.fillRect(x, (h - amp) / 2, 2, amp);
+          }
+          g.globalAlpha = 1;
+          return;
+        }
+
+        const data = state.audioBuffer.getChannelData(0);
+        const step = Math.ceil(data.length / w);
+        const mid = h / 2;
+        g.fillStyle = accent;
+        g.globalAlpha = 0.85;
+        for (let x = 0; x < w; x++) {
+          let min = 1, max = -1;
+          const start = x * step;
+          for (let i = 0; i < step; i++) {
+            const v = data[start + i] || 0;
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
+          const y1 = mid + min * mid * 0.9;
+          const y2 = mid + max * mid * 0.9;
+          g.fillRect(x, y1, 1, Math.max(1, y2 - y1));
+        }
+        g.globalAlpha = 1;
+      }
+
+      window.addEventListener('resize', () => drawWaveform());
+
+      // --- Upload ---
+      function openPicker() {
+        fileInput.click();
+      }
+      $('pickBtn').addEventListener('click', (e) => { e.stopPropagation(); openPicker(); });
+      $('changeBtn').addEventListener('click', (e) => { e.stopPropagation(); openPicker(); });
+      dropzone.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        openPicker();
+      });
+
+      ['dragenter', 'dragover'].forEach((ev) => {
+        dropzone.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dropzone.classList.add('dragover');
+        });
+      });
+      ['dragleave', 'drop'].forEach((ev) => {
+        dropzone.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dropzone.classList.remove('dragover');
+        });
+      });
+      dropzone.addEventListener('drop', (e) => {
+        const file = e.dataTransfer.files?.[0];
+        if (file) uploadFile(file);
+      });
+      fileInput.addEventListener('change', () => {
+        const file = fileInput.files?.[0];
+        if (file) uploadFile(file);
+      });
+
+      function uploadFile(file) {
+        if (state.uploading) return;
+        state.uploading = true;
+        state.looping = false;
+        player.pause();
+
+        $('uploadProgress').classList.remove('hidden');
+        $('uploadBar').style.width = '0%';
+        $('uploadPct').textContent = '0%';
+        $('errorBox').classList.add('hidden');
+        $('resultBox').classList.add('hidden');
+        enableEditor(false);
+
+        const xhr = new XMLHttpRequest();
+        const form = new FormData();
+        form.append('audio', file);
+
+        xhr.upload.addEventListener('progress', (e) => {
+          if (!e.lengthComputable) return;
+          const pct = Math.round((e.loaded / e.total) * 100);
+          $('uploadBar').style.width = pct + '%';
+          $('uploadPct').textContent = pct + '%';
+        });
+
+        xhr.addEventListener('load', async () => {
+          state.uploading = false;
+          $('uploadProgress').classList.add('hidden');
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (xhr.status >= 400) throw new Error(data.error || 'Błąd uploadu');
+
+            state.filename = data.filename;
+            state.originalName = data.originalName;
+            state.duration = data.duration;
+            state.start = 0;
+            state.end = data.duration;
+            state.crossfadeMs = 50;
+            state.repeats = 1;
+
+            $('dropIdle').classList.add('hidden');
+            $('dropLoaded').classList.remove('hidden');
+            $('fileName').textContent = data.originalName;
+            $('fileMeta').textContent =
+              `${formatDuration(data.duration)} · ${formatBytes(data.size)} · ${data.sampleRate} Hz · ${data.channels} ch`;
+
+            player.src = data.url;
+            await player.load?.();
+
+            enableEditor(true);
+            syncSlidersFromState();
+
+            // Peaki waveform – osobny odczyt pliku lokalnego
+            const ab = await file.arrayBuffer();
+            await loadWaveformPeaks(ab);
+          } catch (err) {
+            showError(err.message || 'Nie udało się wczytać pliku.');
+          }
+        });
+
+        xhr.addEventListener('error', () => {
+          state.uploading = false;
+          $('uploadProgress').classList.add('hidden');
+          showError('Błąd połączenia podczas wysyłania pliku.');
+        });
+
+        xhr.open('POST', '/api/upload');
+        xhr.send(form);
+      }
+
+      function showError(msg) {
+        const box = $('errorBox');
+        box.textContent = msg;
+        box.classList.remove('hidden');
+      }
+
+      // --- Controls ---
+      $('startSlider').addEventListener('input', () => {
+        state.start = Number($('startSlider').value);
+        if (state.start >= state.end) state.start = Math.max(0, state.end - 0.05);
+        clampRegion();
+        syncSlidersFromState();
+      });
+      $('endSlider').addEventListener('input', () => {
+        state.end = Number($('endSlider').value);
+        if (state.end <= state.start) state.end = Math.min(state.duration, state.start + 0.05);
+        clampRegion();
+        syncSlidersFromState();
+      });
+
+      function bindTimeInput(inputId, key) {
+        $(inputId).addEventListener('change', () => {
+          const v = parseFloat($(inputId).value.replace(',', '.'));
+          if (!Number.isFinite(v)) return;
+          state[key] = v;
+          clampRegion();
+          syncSlidersFromState();
+        });
+      }
+      bindTimeInput('startInput', 'start');
+      bindTimeInput('endInput', 'end');
+
+      $('crossfadeSlider').addEventListener('input', () => {
+        state.crossfadeMs = Number($('crossfadeSlider').value);
+        $('crossfadeInput').value = state.crossfadeMs;
+        updateSegmentInfo();
+      });
+      $('crossfadeInput').addEventListener('change', () => {
+        state.crossfadeMs = Math.max(0, Math.min(5000, Number($('crossfadeInput').value) || 0));
+        clampRegion();
+        syncSlidersFromState();
+      });
+
+      $('repeatsSlider').addEventListener('input', () => {
+        state.repeats = Number($('repeatsSlider').value);
+        $('repeatsInput').value = state.repeats;
+        updateSegmentInfo();
+      });
+      $('repeatsInput').addEventListener('change', () => {
+        state.repeats = Math.max(1, Math.min(100, Math.floor(Number($('repeatsInput').value) || 1)));
+        syncSlidersFromState();
+      });
+
+      // --- Playback ---
+      let loopRaf = null;
+
+      function stopLoopPreview() {
+        state.looping = false;
+        if (loopRaf) cancelAnimationFrame(loopRaf);
+        loopRaf = null;
+        $('playhead').style.display = 'none';
+        $('loopPreviewBtn').textContent = '↻ Podgląd pętli';
+      }
+
+      function tickPlayhead() {
+        if (!state.duration || player.paused) {
+          $('playhead').style.display = 'none';
+          return;
+        }
+        const ph = $('playhead');
+        ph.style.display = 'block';
+        ph.style.left = (player.currentTime / state.duration) * 100 + '%';
+        loopRaf = requestAnimationFrame(tickPlayhead);
+      }
+
+      player.addEventListener('play', () => {
+        if (loopRaf) cancelAnimationFrame(loopRaf);
+        tickPlayhead();
+      });
+      player.addEventListener('pause', () => {
+        if (!state.looping) {
+          if (loopRaf) cancelAnimationFrame(loopRaf);
+          $('playhead').style.display = 'none';
+        }
+      });
+
+      player.addEventListener('timeupdate', () => {
+        if (!state.looping) return;
+        if (player.currentTime >= state.end - 0.02) {
+          player.currentTime = state.start;
+        }
+      });
+
+      $('playRegionBtn').addEventListener('click', () => {
+        stopLoopPreview();
+        player.currentTime = state.start;
+        const onTime = () => {
+          if (player.currentTime >= state.end) {
+            player.pause();
+            player.removeEventListener('timeupdate', onTime);
+          }
+        };
+        player.addEventListener('timeupdate', onTime);
+        player.play();
+      });
+
+      $('loopPreviewBtn').addEventListener('click', () => {
+        if (state.looping) {
+          player.pause();
+          stopLoopPreview();
+          return;
+        }
+        state.looping = true;
+        $('loopPreviewBtn').textContent = '⏸ Zatrzymaj pętlę';
+        player.currentTime = state.start;
+        player.play();
+        tickPlayhead();
+      });
+
+      $('stopBtn').addEventListener('click', () => {
+        player.pause();
+        stopLoopPreview();
+        player.currentTime = state.start;
+      });
+
+      // --- Generate ---
+      $('generateBtn').addEventListener('click', async () => {
+        if (!state.filename || state.generating) return;
+        state.generating = true;
+        $('errorBox').classList.add('hidden');
+        $('resultBox').classList.add('hidden');
+        $('genProgress').classList.remove('hidden');
+        $('genBar').style.width = '5%';
+        $('genPct').textContent = '5%';
+        $('genStatus').textContent = 'Przygotowanie…';
+        $('generateBtn').disabled = true;
+
+        // Symulowany postęp (ffmpeg nie streamuje % łatwo przez HTTP)
+        let fake = 5;
+        const timer = setInterval(() => {
+          fake = Math.min(90, fake + Math.random() * 8);
+          $('genBar').style.width = fake + '%';
+          $('genPct').textContent = Math.round(fake) + '%';
+          if (fake < 40) $('genStatus').textContent = 'Wycinanie segmentu…';
+          else if (fake < 70) $('genStatus').textContent = 'Crossfade…';
+          else $('genStatus').textContent = 'Kodowanie…';
+        }, 400);
+
+        const format = document.querySelector('input[name="format"]:checked')?.value || 'ogg';
+
+        try {
+          const res = await fetch('/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              filename: state.filename,
+              start: state.start,
+              end: state.end,
+              crossfadeMs: state.crossfadeMs,
+              format,
+              repeats: state.repeats,
+            }),
+          });
+          const data = await res.json();
+          clearInterval(timer);
+          if (!res.ok) throw new Error(data.error || 'Błąd generowania');
+
+          $('genBar').style.width = '100%';
+          $('genPct').textContent = '100%';
+          $('genStatus').textContent = 'Gotowe';
+
+          $('resultBox').classList.remove('hidden');
+          $('resultMeta').textContent =
+            `${data.filename} · ${formatDuration(data.duration)} · crossfade ${data.crossfadeMs} ms · ${data.repeats}×`;
+          const link = $('downloadLink');
+          link.href = data.downloadUrl;
+          link.download = data.filename;
+          // Auto-pobieranie
+          link.click();
+        } catch (err) {
+          clearInterval(timer);
+          showError(err.message || 'Nie udało się wygenerować pętli.');
+          $('genProgress').classList.add('hidden');
+        } finally {
+          state.generating = false;
+          $('generateBtn').disabled = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
