@@ -321,12 +321,16 @@ async function suggestBestLoop(inputPath, durationSec) {
   }
 }
 
+/** Filtr EBU R128 – wyrównanie głośności do poziomu streamingowego. */
+const LOUDNORM_FILTER = 'loudnorm=I=-14:LRA=11:TP=-1.5';
+
 /**
  * Generuje płynną pętlę audio:
  * 1) wycina segment → tymczasowy WAV
  * 2) nakłada koniec na początek (crossfade / acrossfade)
  * 3) opcjonalnie powtarza blok X razy
- * 4) koduje do .ogg (Vorbis) lub .wav
+ * 4) opcjonalna normalizacja LUFS (loudnorm)
+ * 5) koduje do .ogg (Vorbis) lub .wav
  */
 async function generateLoop({
   inputPath,
@@ -336,6 +340,7 @@ async function generateLoop({
   crossfadeMs,
   format,
   repeats,
+  normalize = true,
 }) {
   const duration = endSec - startSec;
   const crossfadeSec = Math.max(0, Number(crossfadeMs) || 0) / 1000;
@@ -405,6 +410,9 @@ async function generateLoop({
 
     await new Promise((resolve, reject) => {
       let cmd = ffmpeg(sourceForEncode);
+      if (normalize) {
+        cmd = cmd.audioFilters(LOUDNORM_FILTER);
+      }
       if (format === 'ogg') {
         cmd = cmd.audioCodec('libvorbis').audioQuality(4).format('ogg');
       } else {
@@ -414,7 +422,7 @@ async function generateLoop({
     });
 
     const outMeta = await probeAudio(outputPath);
-    return { duration: outMeta.duration };
+    return { duration: outMeta.duration, normalized: Boolean(normalize) };
   } finally {
     safeUnlink(tmpSeg);
     safeUnlink(tmpLoop);
@@ -510,6 +518,7 @@ app.post('/api/generate', async (req, res) => {
     crossfadeMs = 50,
     format = 'ogg',
     repeats = 1,
+    normalize = true,
   } = req.body || {};
 
   try {
@@ -537,6 +546,9 @@ app.post('/api/generate', async (req, res) => {
       console.log(`Uwaga: segment dłuższy niż 5 min (${segmentDuration.toFixed(1)} s).`);
     }
 
+    // Domyślnie włączona; wyłączenie tylko przy jawnej wartości false
+    const doNormalize = !(normalize === false || normalize === 'false' || normalize === 0 || normalize === '0');
+
     const outFormat = format === 'wav' ? 'wav' : 'ogg';
     const outName = `loop_${uuidv4()}.${outFormat}`;
     const outputPath = path.join(OUTPUTS_DIR, outName);
@@ -549,6 +561,7 @@ app.post('/api/generate', async (req, res) => {
       crossfadeMs: Number(crossfadeMs) || 0,
       format: outFormat,
       repeats: Number(repeats) || 1,
+      normalize: doNormalize,
     });
 
     res.json({
@@ -559,6 +572,7 @@ app.post('/api/generate', async (req, res) => {
       format: outFormat,
       crossfadeMs: Number(crossfadeMs) || 0,
       repeats: Math.max(1, Math.min(100, Math.floor(Number(repeats) || 1))),
+      normalize: result.normalized,
     });
   } catch (err) {
     console.error('Generate error:', err);

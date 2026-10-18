@@ -206,6 +206,67 @@
       align-items: center;
       justify-content: center;
     }
+    .toggle-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 0.85rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+    }
+    .toggle {
+      position: relative;
+      width: 42px;
+      height: 24px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .toggle input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      position: absolute;
+    }
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: var(--track);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.15s;
+    }
+    .toggle input:checked + .toggle-slider {
+      background: var(--accent);
+    }
+    .toggle input:checked + .toggle-slider::before {
+      transform: translateX(18px);
+    }
+    .hint-tip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--text-muted);
+      cursor: help;
+      vertical-align: middle;
+      margin-left: 0.35rem;
+    }
   </style>
 </head>
 <body class="font-sans antialiased">
@@ -325,6 +386,29 @@
           </div>
         </div>
         <div class="sm:ml-auto text-sm muted" id="segmentInfo">Segment: —</div>
+      </div>
+
+      <div class="mt-4">
+        <div class="label">Automatyczna normalizacja głośności</div>
+        <label class="toggle-row cursor-pointer" for="normalizeToggle">
+          <span class="toggle">
+            <input type="checkbox" id="normalizeToggle" checked />
+            <span class="toggle-slider" aria-hidden="true"></span>
+          </span>
+          <span>
+            <span class="font-medium text-sm">
+              Wyrównaj głośność (Normalizacja LUFS)
+              <span
+                class="hint-tip"
+                title="Automatycznie dostosowuje głośność bardzo cichych lub bardzo głośnych ścieżek do standardowego poziomu (EBU R128 / LUFS ≈ −14) bez zniekształceń."
+                aria-label="Informacja o normalizacji"
+              >?</span>
+            </span>
+            <span class="muted text-xs block mt-1">
+              ON domyślnie · EBU R128 (loudnorm I=−14, LRA=11, TP=−1.5) · bez clippingu
+            </span>
+          </span>
+        </label>
       </div>
     </section>
 
@@ -831,18 +915,20 @@
         $('genStatus').textContent = 'Przygotowanie…';
         $('generateBtn').disabled = true;
 
+        const format = document.querySelector('input[name="format"]:checked')?.value || 'ogg';
+        const normalize = Boolean($('normalizeToggle')?.checked);
+
         // Symulowany postęp (ffmpeg nie streamuje % łatwo przez HTTP)
         let fake = 5;
         const timer = setInterval(() => {
           fake = Math.min(90, fake + Math.random() * 8);
           $('genBar').style.width = fake + '%';
           $('genPct').textContent = Math.round(fake) + '%';
-          if (fake < 40) $('genStatus').textContent = 'Wycinanie segmentu…';
-          else if (fake < 70) $('genStatus').textContent = 'Crossfade…';
+          if (fake < 35) $('genStatus').textContent = 'Wycinanie segmentu…';
+          else if (fake < 55) $('genStatus').textContent = 'Crossfade…';
+          else if (fake < 75 && normalize) $('genStatus').textContent = 'Normalizacja LUFS…';
           else $('genStatus').textContent = 'Kodowanie…';
         }, 400);
-
-        const format = document.querySelector('input[name="format"]:checked')?.value || 'ogg';
 
         try {
           const res = await fetch('/api/generate', {
@@ -855,6 +941,7 @@
               crossfadeMs: state.crossfadeMs,
               format,
               repeats: state.repeats,
+              normalize,
             }),
           });
           const data = await res.json();
@@ -866,8 +953,9 @@
           $('genStatus').textContent = 'Gotowe';
 
           $('resultBox').classList.remove('hidden');
+          const normLabel = data.normalize ? ' · LUFS ON' : ' · LUFS OFF';
           $('resultMeta').textContent =
-            `${data.filename} · ${formatDuration(data.duration)} · crossfade ${data.crossfadeMs} ms · ${data.repeats}×`;
+            `${data.filename} · ${formatDuration(data.duration)} · crossfade ${data.crossfadeMs} ms · ${data.repeats}×${normLabel}`;
           const link = $('downloadLink');
           link.href = data.downloadUrl;
           link.download = data.filename;
