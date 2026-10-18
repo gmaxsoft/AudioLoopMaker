@@ -1,13 +1,15 @@
 (() => {
       const $ = (id) => document.getElementById(id);
 
+      const DEFAULT_CROSSFADE_MS = 140;
+
       const state = {
         filename: null,
         originalName: null,
         duration: 0,
         start: 0,
         end: 0,
-        crossfadeMs: 140,
+        crossfadeMs: DEFAULT_CROSSFADE_MS,
         repeats: 1,
         looping: false,
         audioBuffer: null,
@@ -16,7 +18,7 @@
         suggesting: false,
         suggestedStart: 0,
         suggestedEnd: 0,
-        suggestedCrossfade: 140,
+        suggestedCrossfade: DEFAULT_CROSSFADE_MS,
         suggestionNote: null,
       };
 
@@ -117,7 +119,7 @@
         box.classList.remove('hidden');
         $('suggestRange').textContent =
           `${formatTime(state.suggestedStart)} do ${formatTime(state.suggestedEnd)} s` +
-          ` · crossfade ${state.suggestedCrossfade} ms`;
+          ` · crossfade ${DEFAULT_CROSSFADE_MS} ms`;
         $('suggestExtra').textContent = state.suggestionNote
           ? `AI / Algorytm: ${state.suggestionNote}`
           : 'AI / Algorytm sugeruje powyższy fragment jako najlepszą pętlę.';
@@ -127,12 +129,13 @@
         if (!suggestion) return;
         state.suggestedStart = Number(suggestion.suggestedStart) || 0;
         state.suggestedEnd = Number(suggestion.suggestedEnd) || state.duration;
-        state.suggestedCrossfade = Number(suggestion.suggestedCrossfade) || 140;
+        // Crossfade zawsze domyślnie 140 ms – algorytm nie nadpisuje tej wartości
+        state.suggestedCrossfade = DEFAULT_CROSSFADE_MS;
         if (suggestion.suggestionNote) state.suggestionNote = suggestion.suggestionNote;
 
         state.start = state.suggestedStart;
         state.end = state.suggestedEnd;
-        state.crossfadeMs = state.suggestedCrossfade;
+        state.crossfadeMs = DEFAULT_CROSSFADE_MS;
         clampRegion();
         syncSlidersFromState();
         updateSuggestInfo();

@@ -190,17 +190,10 @@ function analyzeSamplesForLoop(samples, sampleRate, durationSec) {
     const endIdx = nearestZeroCrossing(samples, samples.length - 1, zcRadius * 2);
     const start = Math.max(0, startIdx / sampleRate);
     const end = Math.min(duration, Math.max(start + 0.05, endIdx / sampleRate));
-    const corr = normalizedCorrelation(
-      samples,
-      startIdx,
-      Math.max(startIdx, endIdx - edgeSamples),
-      Math.min(edgeSamples, endIdx - startIdx)
-    );
-    const crossfade = corr > 0.7 ? 100 : corr > 0.35 ? 140 : 160;
     return {
       suggestedStart: Number(start.toFixed(3)),
       suggestedEnd: Number(end.toFixed(3)),
-      suggestedCrossfade: crossfade,
+      suggestedCrossfade: 140,
       suggestionNote: 'Cały utwór ze snappowaniem zero-crossing',
     };
   }
@@ -290,20 +283,13 @@ function analyzeSamplesForLoop(samples, sampleRate, durationSec) {
   const suggestedStart = Number((snappedStart / sampleRate).toFixed(3));
   const suggestedEnd = Number(Math.min(duration, snappedEnd / sampleRate).toFixed(3));
 
-  let suggestedCrossfade = 140;
-  if (best.corr > 0.75) suggestedCrossfade = 100;
-  else if (best.corr > 0.45) suggestedCrossfade = 140;
-  else if (best.corr < 0.15) suggestedCrossfade = 180;
-
-  // Dopasuj crossfade do długości segmentu
   const segLen = suggestedEnd - suggestedStart;
-  const maxCf = Math.max(20, Math.floor((segLen / 2 - 0.02) * 1000));
-  suggestedCrossfade = Math.min(suggestedCrossfade, maxCf, 100);
 
   return {
     suggestedStart,
     suggestedEnd,
-    suggestedCrossfade,
+    // Stała domyślna – UI zawsze używa 140 ms; algorytm dobiera tylko Start/End
+    suggestedCrossfade: 140,
     suggestionNote: `Stabilny fragment ~${segLen.toFixed(1)} s (zero-crossing, score ${best.score.toFixed(2)})`,
   };
 }
