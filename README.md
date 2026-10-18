@@ -1,5 +1,7 @@
 # Audio Loop Maker
 
+![Audio Loop Maker](AudioLoopMaker.png)
+
 Lokalna aplikacja webowa do tworzenia **płynnych pętli audio** (seamless loop) z crossfade. Wspiera długie nagrania (5 minut i dłuższe) oraz eksport do **.ogg (Vorbis)** i **.wav**.
 
 Działa na **Windows 11** i **Linux** (wymaga Node.js ≥ 18). FFmpeg jest dołączony przez `ffmpeg-static` — nie trzeba instalować go osobno.
