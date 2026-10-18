@@ -20,6 +20,9 @@
         suggestedEnd: 0,
         suggestedCrossfade: DEFAULT_CROSSFADE_MS,
         suggestionNote: null,
+        suggestionMode: 'best', // 'best' | 'longest'
+        bestSuggestion: null,
+        longestSuggestion: null,
       };
 
       const player = $('player');
@@ -117,16 +120,18 @@
           return;
         }
         box.classList.remove('hidden');
+        const modeLabel = state.suggestionMode === 'longest' ? 'najdłuższy fragment' : 'najlepsza pętla';
         $('suggestRange').textContent =
           `${formatTime(state.suggestedStart)} do ${formatTime(state.suggestedEnd)} s` +
           ` · crossfade ${DEFAULT_CROSSFADE_MS} ms`;
         $('suggestExtra').textContent = state.suggestionNote
-          ? `AI / Algorytm: ${state.suggestionNote}`
-          : 'AI / Algorytm sugeruje powyższy fragment jako najlepszą pętlę.';
+          ? `AI / Algorytm (${modeLabel}): ${state.suggestionNote}`
+          : `AI / Algorytm sugeruje powyższy fragment (${modeLabel}).`;
       }
 
-      function applySuggestion(suggestion) {
+      function applySuggestion(suggestion, mode = 'best') {
         if (!suggestion) return;
+        state.suggestionMode = mode;
         state.suggestedStart = Number(suggestion.suggestedStart) || 0;
         state.suggestedEnd = Number(suggestion.suggestedEnd) || state.duration;
         // Crossfade zawsze domyślnie 140 ms – algorytm nie nadpisuje tej wartości
@@ -139,6 +144,51 @@
         clampRegion();
         syncSlidersFromState();
         updateSuggestInfo();
+      }
+
+      async function requestSuggestion(mode) {
+        if (!state.filename || state.suggesting) return;
+        state.suggesting = true;
+        const btn = mode === 'longest' ? $('longestSuggestBtn') : $('autoSuggestBtn');
+        const otherBtn = mode === 'longest' ? $('autoSuggestBtn') : $('longestSuggestBtn');
+        const prev = btn.textContent;
+        btn.disabled = true;
+        if (otherBtn) otherBtn.disabled = true;
+        btn.textContent = 'Analizowanie…';
+        $('errorBox').classList.add('hidden');
+        try {
+          const res = await fetch(
+            `/api/suggest/${encodeURIComponent(state.filename)}?mode=${mode}`
+          );
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Błąd analizy');
+
+          if (data.best) state.bestSuggestion = data.best;
+          if (data.longest) state.longestSuggestion = data.longest;
+
+          const picked = mode === 'longest'
+            ? (data.longest || data)
+            : (data.best || data);
+          applySuggestion(picked, mode);
+        } catch (err) {
+          const cached = mode === 'longest' ? state.longestSuggestion : state.bestSuggestion;
+          if (cached && cached.suggestedEnd > cached.suggestedStart) {
+            applySuggestion(cached, mode);
+          } else if (state.suggestedEnd > state.suggestedStart && mode === 'best') {
+            applySuggestion({
+              suggestedStart: state.suggestedStart,
+              suggestedEnd: state.suggestedEnd,
+              suggestionNote: state.suggestionNote,
+            }, 'best');
+          } else {
+            showError(err.message || 'Nie udało się zaproponować pętli.');
+          }
+        } finally {
+          state.suggesting = false;
+          btn.disabled = false;
+          if (otherBtn) otherBtn.disabled = false;
+          btn.textContent = prev;
+        }
       }
 
       // --- Waveform (prosty peaki z AudioContext) ---
@@ -272,6 +322,18 @@
             state.duration = data.duration;
             state.repeats = 1;
             state.suggestionNote = data.suggestionNote || null;
+            state.bestSuggestion = {
+              suggestedStart: data.suggestedStart ?? 0,
+              suggestedEnd: data.suggestedEnd ?? data.duration,
+              suggestedCrossfade: DEFAULT_CROSSFADE_MS,
+              suggestionNote: data.suggestionNote,
+            };
+            state.longestSuggestion = {
+              suggestedStart: data.longestSuggestedStart ?? data.suggestedStart ?? 0,
+              suggestedEnd: data.longestSuggestedEnd ?? data.suggestedEnd ?? data.duration,
+              suggestedCrossfade: DEFAULT_CROSSFADE_MS,
+              suggestionNote: data.longestSuggestionNote || 'Najdłuższy fragment na pętlę',
+            };
 
             $('dropIdle').classList.add('hidden');
             $('dropLoaded').classList.remove('hidden');
@@ -284,12 +346,7 @@
 
             enableEditor(true);
 
-            applySuggestion({
-              suggestedStart: data.suggestedStart ?? 0,
-              suggestedEnd: data.suggestedEnd ?? data.duration,
-              suggestedCrossfade: data.suggestedCrossfade ?? 140,
-              suggestionNote: data.suggestionNote,
-            });
+            applySuggestion(state.bestSuggestion, 'best');
 
             // Peaki waveform – osobny odczyt pliku lokalnego
             const ab = await file.arrayBuffer();
@@ -434,36 +491,21 @@
         player.currentTime = state.start;
       });
 
-      $('autoSuggestBtn').addEventListener('click', async () => {
-        if (!state.filename || state.suggesting) return;
-        state.suggesting = true;
-        const btn = $('autoSuggestBtn');
-        const prev = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = 'Analizowanie…';
-        $('errorBox').classList.add('hidden');
-        try {
-          const res = await fetch(`/api/suggest/${encodeURIComponent(state.filename)}`);
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Błąd analizy');
-          applySuggestion(data);
-        } catch (err) {
-          // Fallback: lokalnie zapisane sugestie z uploadu
-          if (state.suggestedEnd > state.suggestedStart) {
-            applySuggestion({
-              suggestedStart: state.suggestedStart,
-              suggestedEnd: state.suggestedEnd,
-              suggestedCrossfade: state.suggestedCrossfade,
-              suggestionNote: state.suggestionNote,
-            });
-          } else {
-            showError(err.message || 'Nie udało się zaproponować pętli.');
-          }
-        } finally {
-          state.suggesting = false;
-          btn.disabled = false;
-          btn.textContent = prev;
+      $('autoSuggestBtn').addEventListener('click', () => {
+        // Szybka ścieżka: użyj cache z uploadu, inaczej dopytaj API
+        if (state.bestSuggestion) {
+          applySuggestion(state.bestSuggestion, 'best');
+          return;
         }
+        requestSuggestion('best');
+      });
+
+      $('longestSuggestBtn').addEventListener('click', () => {
+        if (state.longestSuggestion) {
+          applySuggestion(state.longestSuggestion, 'longest');
+          return;
+        }
+        requestSuggestion('longest');
       });
 
       // --- Generate ---

@@ -163,139 +163,175 @@ function normalizedCorrelation(samples, aStart, bStart, length) {
   return den > 0 ? num / den : 0;
 }
 
+/** Minimalny próg jakości, by uznać fragment za nadający się na pętlę. */
+const LOOP_QUALITY_THRESHOLD = 0.38;
+
+function snapSuggestion(candidate, samples, sampleRate, duration, notePrefix) {
+  const zcRadius = Math.floor(sampleRate * 0.02);
+  const snappedStart = nearestZeroCrossing(samples, candidate.startIdx, zcRadius);
+  let snappedEnd = nearestZeroCrossing(samples, candidate.endIdx, zcRadius);
+  if (snappedEnd <= snappedStart + Math.floor(0.5 * sampleRate)) {
+    snappedEnd = Math.min(
+      samples.length - 1,
+      snappedStart + Math.floor(candidate.loopLen * sampleRate)
+    );
+  }
+  const suggestedStart = Number((snappedStart / sampleRate).toFixed(3));
+  const suggestedEnd = Number(Math.min(duration, snappedEnd / sampleRate).toFixed(3));
+  const segLen = suggestedEnd - suggestedStart;
+  return {
+    suggestedStart,
+    suggestedEnd,
+    suggestedCrossfade: 140,
+    suggestionNote: `${notePrefix} ~${segLen.toFixed(1)} s (score ${candidate.score.toFixed(2)})`,
+  };
+}
+
 /**
- * Analiza PCM: proponuje stabilny fragment 5–30 s (lub cały utwór),
- * ze snappowaniem do zero-crossing oraz sugerowanym crossfade.
+ * Analiza PCM – zwraca dwie propozycje:
+ * - best: najlepszy jakościowo fragment (5–30 s)
+ * - longest: najdłuższy fragment spełniający próg jakości pętli
  */
 function analyzeSamplesForLoop(samples, sampleRate, durationSec) {
   const duration = Math.max(0, Number(durationSec) || samples.length / sampleRate);
-  const fallback = {
+  const fallbackOne = {
     suggestedStart: 0,
     suggestedEnd: Number(duration.toFixed(3)),
     suggestedCrossfade: 140,
     suggestionNote: 'Cały utwór (fallback)',
   };
+  const fallback = { best: fallbackOne, longest: { ...fallbackOne } };
 
   if (!samples || samples.length < sampleRate * 0.2) {
     return fallback;
   }
 
-  const zcRadius = Math.floor(sampleRate * 0.02); // ±20 ms
   const edgeMs = 80;
   const edgeSamples = Math.floor((edgeMs / 1000) * sampleRate);
+  const zcRadius = Math.floor(sampleRate * 0.02);
 
-  // Krótkie nagrania: cały utwór, snap do zero-crossing
+  // Krótkie nagrania: cały utwór
   if (duration <= 8) {
     const startIdx = nearestZeroCrossing(samples, 0, zcRadius * 2);
     const endIdx = nearestZeroCrossing(samples, samples.length - 1, zcRadius * 2);
     const start = Math.max(0, startIdx / sampleRate);
     const end = Math.min(duration, Math.max(start + 0.05, endIdx / sampleRate));
-    return {
+    const one = {
       suggestedStart: Number(start.toFixed(3)),
       suggestedEnd: Number(end.toFixed(3)),
       suggestedCrossfade: 140,
       suggestionNote: 'Cały utwór ze snappowaniem zero-crossing',
     };
+    return { best: one, longest: { ...one } };
   }
 
-  const targetLengths = [5, 8, 10, 12, 15, 20, 30].filter((l) => l <= duration);
-  if (targetLengths.length === 0) {
-    targetLengths.push(Math.max(1, duration));
-  }
-
-  // Pomiń ciszę / fade na brzegach (ok. 3% lub max 2 s)
+  // Pomiń ciszę / fade na brzegach
   const margin = Math.min(2, duration * 0.03);
   const searchStart = Math.floor(margin * sampleRate);
   const searchEnd = Math.floor((duration - margin) * sampleRate);
+  const usableSec = Math.max(1, (searchEnd - searchStart) / sampleRate);
 
-  const hop = Math.max(1, Math.floor(0.2 * sampleRate)); // 200 ms
-  const energyWin = Math.floor(0.05 * sampleRate); // 50 ms
+  const hop = Math.max(1, Math.floor(0.25 * sampleRate)); // 250 ms
+  const energyWin = Math.floor(0.05 * sampleRate);
 
-  let best = null;
+  function scoreWindow(i, winSamples, loopLen) {
+    const endIdx = i + winSamples;
+    const chunkRms = [];
+    for (let t = i; t + energyWin <= endIdx; t += energyWin) {
+      chunkRms.push(windowRms(samples, t, t + energyWin));
+    }
+    if (chunkRms.length < 2) return null;
+    const meanRms = chunkRms.reduce((a, b) => a + b, 0) / chunkRms.length;
+    if (meanRms < 0.008) return null;
 
-  for (const loopLen of targetLengths) {
+    let varSum = 0;
+    for (const r of chunkRms) {
+      const d = r - meanRms;
+      varSum += d * d;
+    }
+    const rmsStd = Math.sqrt(varSum / chunkRms.length);
+    const stability = meanRms > 0 ? 1 / (1 + (rmsStd / meanRms) * 4) : 0;
+
+    const corrLen = Math.min(edgeSamples, Math.floor(winSamples / 4));
+    const corr = normalizedCorrelation(samples, i, endIdx - corrLen, corrLen);
+
+    const edgeEnergy =
+      (windowRms(samples, i, i + Math.min(edgeSamples, winSamples)) +
+        windowRms(samples, endIdx - Math.min(edgeSamples, winSamples), endIdx)) /
+      2;
+    const edgeScore = 1 / (1 + edgeEnergy * 8);
+
+    const lengthBonus = Math.min(1, loopLen / 30) * 0.15;
+    const quality = stability * 0.4 + Math.max(0, corr) * 0.45 + edgeScore * 0.15;
+    return {
+      startIdx: i,
+      endIdx,
+      score: quality + lengthBonus,
+      quality,
+      corr,
+      loopLen,
+    };
+  }
+
+  function findBestAtLength(loopLen) {
     const winSamples = Math.floor(loopLen * sampleRate);
-    if (winSamples < energyWin * 4) continue;
-
+    if (winSamples < energyWin * 4) return null;
     const maxStart = Math.min(searchEnd - winSamples, samples.length - winSamples - 1);
-    if (maxStart <= searchStart) continue;
+    if (maxStart <= searchStart) return null;
 
+    let localBest = null;
     for (let i = searchStart; i <= maxStart; i += hop) {
-      const endIdx = i + winSamples;
+      const c = scoreWindow(i, winSamples, loopLen);
+      if (!c) continue;
+      if (!localBest || c.score > localBest.score) localBest = c;
+    }
+    return localBest;
+  }
 
-      // Stabilność energii (niska wariancja RMS)
-      const chunkRms = [];
-      for (let t = i; t + energyWin <= endIdx; t += energyWin) {
-        chunkRms.push(windowRms(samples, t, t + energyWin));
-      }
-      if (chunkRms.length < 2) continue;
-      const meanRms = chunkRms.reduce((a, b) => a + b, 0) / chunkRms.length;
-      if (meanRms < 0.008) continue; // pomiń prawie ciszę
-      let varSum = 0;
-      for (const r of chunkRms) {
-        const d = r - meanRms;
-        varSum += d * d;
-      }
-      const rmsStd = Math.sqrt(varSum / chunkRms.length);
-      const stability = meanRms > 0 ? 1 / (1 + (rmsStd / meanRms) * 4) : 0;
+  // --- Najlepsza jakościowo (5–30 s) ---
+  const bestLengths = [5, 8, 10, 12, 15, 20, 30].filter((l) => l <= usableSec);
+  if (bestLengths.length === 0) bestLengths.push(Math.max(1, usableSec));
 
-      // Podobieństwo początku i końca (seamless)
-      const corrLen = Math.min(edgeSamples, Math.floor(winSamples / 4));
-      const corr = normalizedCorrelation(samples, i, endIdx - corrLen, corrLen);
+  let bestCand = null;
+  for (const loopLen of bestLengths) {
+    const c = findBestAtLength(loopLen);
+    if (!c) continue;
+    if (!bestCand || c.score > bestCand.score) bestCand = c;
+  }
 
-      // Cichsze krawędzie = mniej trzasków
-      const edgeEnergy =
-        (windowRms(samples, i, i + Math.min(edgeSamples, winSamples)) +
-          windowRms(samples, endIdx - Math.min(edgeSamples, winSamples), endIdx)) /
-        2;
-      const edgeScore = 1 / (1 + edgeEnergy * 8);
-
-      // Preferuj dłuższe pętle lekko
-      const lengthBonus = (loopLen / 30) * 0.15;
-
-      const score = stability * 0.35 + Math.max(0, corr) * 0.45 + edgeScore * 0.15 + lengthBonus;
-
-      if (!best || score > best.score) {
-        best = { startIdx: i, endIdx, score, corr, loopLen, meanRms };
-      }
+  // --- Najdłuższy nadający się na pętlę (od max w dół, pierwszy spełniający próg) ---
+  let longestCand = null;
+  const maxLong = Math.floor(usableSec);
+  for (let L = maxLong; L >= 5; L -= L > 90 ? 5 : L > 45 ? 2 : 1) {
+    const c = findBestAtLength(L);
+    if (c && c.quality >= LOOP_QUALITY_THRESHOLD) {
+      longestCand = c;
+      break; // pierwsza (najdłuższa) spełniająca próg
     }
   }
 
-  if (!best) {
-    // Środkowy fragment 10 s lub cały utwór
+  if (!bestCand) {
     const len = Math.min(10, duration);
     const midStart = Math.max(0, (duration - len) / 2);
-    best = {
+    bestCand = {
       startIdx: Math.floor(midStart * sampleRate),
       endIdx: Math.floor((midStart + len) * sampleRate),
       score: 0,
+      quality: 0,
       corr: 0,
       loopLen: len,
     };
   }
-
-  const snappedStart = nearestZeroCrossing(samples, best.startIdx, zcRadius);
-  let snappedEnd = nearestZeroCrossing(samples, best.endIdx, zcRadius);
-  if (snappedEnd <= snappedStart + Math.floor(0.5 * sampleRate)) {
-    snappedEnd = Math.min(samples.length - 1, snappedStart + Math.floor(best.loopLen * sampleRate));
-  }
-
-  const suggestedStart = Number((snappedStart / sampleRate).toFixed(3));
-  const suggestedEnd = Number(Math.min(duration, snappedEnd / sampleRate).toFixed(3));
-
-  const segLen = suggestedEnd - suggestedStart;
+  if (!longestCand) longestCand = bestCand;
 
   return {
-    suggestedStart,
-    suggestedEnd,
-    // Stała domyślna – UI zawsze używa 140 ms; algorytm dobiera tylko Start/End
-    suggestedCrossfade: 140,
-    suggestionNote: `Stabilny fragment ~${segLen.toFixed(1)} s (zero-crossing, score ${best.score.toFixed(2)})`,
+    best: snapSuggestion(bestCand, samples, sampleRate, duration, 'Najlepsza pętla'),
+    longest: snapSuggestion(longestCand, samples, sampleRate, duration, 'Najdłuższy fragment na pętlę'),
   };
 }
 
-/** Pełna ścieżka: dekoduj → analizuj → posprzątaj. */
-async function suggestBestLoop(inputPath, durationSec) {
+/** Pełna ścieżka: dekoduj → analizuj (best + longest) → posprzątaj. */
+async function suggestLoops(inputPath, durationSec) {
   const tmpPcm = path.join(UPLOADS_DIR, `${uuidv4()}_analyze.pcm`);
   try {
     await extractMonoPcm(inputPath, tmpPcm);
@@ -305,6 +341,12 @@ async function suggestBestLoop(inputPath, durationSec) {
   } finally {
     safeUnlink(tmpPcm);
   }
+}
+
+/** Kompatybilność: zwraca tylko propozycję „best”. */
+async function suggestBestLoop(inputPath, durationSec) {
+  const both = await suggestLoops(inputPath, durationSec);
+  return both.best;
 }
 
 /** Filtr EBU R128 – wyrównanie głośności do poziomu streamingowego. */
@@ -426,17 +468,21 @@ app.post('/api/upload', upload.single('audio'), async (req, res) => {
 
     const meta = await probeAudio(req.file.path);
 
-    let suggestion = {
+    const fallbackOne = {
       suggestedStart: 0,
       suggestedEnd: Number(meta.duration.toFixed(3)),
       suggestedCrossfade: 140,
       suggestionNote: 'Domyślnie cały utwór',
     };
+    let suggestions = { best: fallbackOne, longest: { ...fallbackOne } };
     try {
-      suggestion = await suggestBestLoop(req.file.path, meta.duration);
+      suggestions = await suggestLoops(req.file.path, meta.duration);
     } catch (analyseErr) {
       console.warn('Analiza pętli nie powiodła się, użyto fallback:', analyseErr.message);
     }
+
+    const best = suggestions.best;
+    const longest = suggestions.longest;
 
     res.json({
       id: path.basename(req.file.filename, path.extname(req.file.filename)),
@@ -448,10 +494,14 @@ app.post('/api/upload', upload.single('audio'), async (req, res) => {
       channels: meta.channels,
       sampleRate: meta.sampleRate,
       codec: meta.codec,
-      suggestedStart: suggestion.suggestedStart,
-      suggestedEnd: suggestion.suggestedEnd,
-      suggestedCrossfade: suggestion.suggestedCrossfade,
-      suggestionNote: suggestion.suggestionNote || null,
+      suggestedStart: best.suggestedStart,
+      suggestedEnd: best.suggestedEnd,
+      suggestedCrossfade: best.suggestedCrossfade,
+      suggestionNote: best.suggestionNote || null,
+      longestSuggestedStart: longest.suggestedStart,
+      longestSuggestedEnd: longest.suggestedEnd,
+      longestSuggestedCrossfade: longest.suggestedCrossfade,
+      longestSuggestionNote: longest.suggestionNote || null,
     });
   } catch (err) {
     if (req.file) safeUnlink(req.file.path);
@@ -476,7 +526,10 @@ app.get('/api/meta/:filename', async (req, res) => {
   }
 });
 
-/** Ponowna propozycja najlepszej pętli dla już wgranego pliku. */
+/**
+ * Propozycja pętli dla już wgranego pliku.
+ * Query: ?mode=best (domyślnie) | mode=longest
+ */
 app.get('/api/suggest/:filename', async (req, res) => {
   try {
     const safeName = path.basename(req.params.filename);
@@ -485,9 +538,14 @@ app.get('/api/suggest/:filename', async (req, res) => {
       return res.status(404).json({ error: 'Plik nie istnieje.' });
     }
     const meta = await probeAudio(filePath);
-    const suggestion = await suggestBestLoop(filePath, meta.duration);
+    const both = await suggestLoops(filePath, meta.duration);
+    const mode = String(req.query.mode || 'best').toLowerCase() === 'longest' ? 'longest' : 'best';
+    const suggestion = both[mode];
     res.json({
       duration: meta.duration,
+      mode,
+      best: both.best,
+      longest: both.longest,
       ...suggestion,
     });
   } catch (err) {
