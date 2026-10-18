@@ -1,0 +1,11 @@
+node_modules/
+uploads/*
+!uploads/.gitkeep
+public/outputs/*
+!public/outputs/.gitkeep
+*.log
+.DS_Store
+Thumbs.db
+.env
+.idea/
+.vscode/
