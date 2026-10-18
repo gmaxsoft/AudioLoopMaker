@@ -51,6 +51,8 @@ my-loop-maker/
 ├── README.md
 ├── public/
 │   ├── index.html     # Interfejs (HTML + Tailwind CSS)
+│   ├── css/style.css  # Style aplikacji
+│   ├── js/script.js   # Logika frontendu
 │   └── outputs/       # Wygenerowane pętle (tymczasowe)
 └── uploads/           # Wgrane pliki źródłowe (tymczasowe)
 ```

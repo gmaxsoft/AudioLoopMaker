@@ -172,7 +172,7 @@ function analyzeSamplesForLoop(samples, sampleRate, durationSec) {
   const fallback = {
     suggestedStart: 0,
     suggestedEnd: Number(duration.toFixed(3)),
-    suggestedCrossfade: 80,
+    suggestedCrossfade: 140,
     suggestionNote: 'Cały utwór (fallback)',
   };
 
@@ -196,7 +196,7 @@ function analyzeSamplesForLoop(samples, sampleRate, durationSec) {
       Math.max(startIdx, endIdx - edgeSamples),
       Math.min(edgeSamples, endIdx - startIdx)
     );
-    const crossfade = corr > 0.7 ? 50 : corr > 0.35 ? 80 : 100;
+    const crossfade = corr > 0.7 ? 100 : corr > 0.35 ? 140 : 160;
     return {
       suggestedStart: Number(start.toFixed(3)),
       suggestedEnd: Number(end.toFixed(3)),
@@ -290,10 +290,10 @@ function analyzeSamplesForLoop(samples, sampleRate, durationSec) {
   const suggestedStart = Number((snappedStart / sampleRate).toFixed(3));
   const suggestedEnd = Number(Math.min(duration, snappedEnd / sampleRate).toFixed(3));
 
-  let suggestedCrossfade = 80;
-  if (best.corr > 0.75) suggestedCrossfade = 50;
-  else if (best.corr > 0.45) suggestedCrossfade = 70;
-  else if (best.corr < 0.15) suggestedCrossfade = 100;
+  let suggestedCrossfade = 140;
+  if (best.corr > 0.75) suggestedCrossfade = 100;
+  else if (best.corr > 0.45) suggestedCrossfade = 140;
+  else if (best.corr < 0.15) suggestedCrossfade = 180;
 
   // Dopasuj crossfade do długości segmentu
   const segLen = suggestedEnd - suggestedStart;
@@ -443,7 +443,7 @@ app.post('/api/upload', upload.single('audio'), async (req, res) => {
     let suggestion = {
       suggestedStart: 0,
       suggestedEnd: Number(meta.duration.toFixed(3)),
-      suggestedCrossfade: 80,
+      suggestedCrossfade: 140,
       suggestionNote: 'Domyślnie cały utwór',
     };
     try {
@@ -515,7 +515,7 @@ app.post('/api/generate', async (req, res) => {
     filename,
     start,
     end,
-    crossfadeMs = 50,
+    crossfadeMs = 140,
     format = 'ogg',
     repeats = 1,
     normalize = true,
