@@ -76,6 +76,251 @@ function probeAudio(filePath) {
   });
 }
 
+const ANALYSIS_RATE = 22050;
+
+/** Dekoduje audio do mono PCM s16le (raw) do analizy. */
+function extractMonoPcm(inputPath, outPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .audioChannels(1)
+      .audioFrequency(ANALYSIS_RATE)
+      .audioCodec('pcm_s16le')
+      .format('s16le')
+      .on('error', reject)
+      .on('end', resolve)
+      .save(outPath);
+  });
+}
+
+/** Najbliższe przejście przez zero w okolicy indeksu. */
+function nearestZeroCrossing(samples, index, searchRadius) {
+  const n = samples.length;
+  const center = Math.max(0, Math.min(n - 1, index | 0));
+  const radius = Math.max(1, searchRadius | 0);
+  let best = center;
+  let bestAbs = Math.abs(samples[center]);
+
+  for (let d = 0; d <= radius; d++) {
+    for (const idx of [center - d, center + d]) {
+      if (idx <= 0 || idx >= n - 1) continue;
+      const a = samples[idx - 1];
+      const b = samples[idx];
+      const crossed = (a >= 0 && b < 0) || (a < 0 && b >= 0) || b === 0;
+      const absB = Math.abs(b);
+      if (crossed && absB <= bestAbs) {
+        bestAbs = absB;
+        best = idx;
+        if (absB === 0) return best;
+      } else if (absB < bestAbs) {
+        bestAbs = absB;
+        best = idx;
+      }
+    }
+  }
+  return best;
+}
+
+/** RMS w oknie [from, to). */
+function windowRms(samples, from, to) {
+  let sum = 0;
+  const start = Math.max(0, from | 0);
+  const end = Math.min(samples.length, to | 0);
+  const len = end - start;
+  if (len <= 0) return 0;
+  for (let i = start; i < end; i++) {
+    const v = samples[i] / 32768;
+    sum += v * v;
+  }
+  return Math.sqrt(sum / len);
+}
+
+/** Korelacja znormalizowana dwóch wycinków (podobieństwo styku pętli). */
+function normalizedCorrelation(samples, aStart, bStart, length) {
+  const n = samples.length;
+  const len = Math.min(length, n - aStart, n - bStart);
+  if (len < 8) return 0;
+
+  let meanA = 0;
+  let meanB = 0;
+  for (let i = 0; i < len; i++) {
+    meanA += samples[aStart + i];
+    meanB += samples[bStart + i];
+  }
+  meanA /= len;
+  meanB /= len;
+
+  let num = 0;
+  let denA = 0;
+  let denB = 0;
+  for (let i = 0; i < len; i++) {
+    const da = samples[aStart + i] - meanA;
+    const db = samples[bStart + i] - meanB;
+    num += da * db;
+    denA += da * da;
+    denB += db * db;
+  }
+  const den = Math.sqrt(denA * denB);
+  return den > 0 ? num / den : 0;
+}
+
+/**
+ * Analiza PCM: proponuje stabilny fragment 5–30 s (lub cały utwór),
+ * ze snappowaniem do zero-crossing oraz sugerowanym crossfade.
+ */
+function analyzeSamplesForLoop(samples, sampleRate, durationSec) {
+  const duration = Math.max(0, Number(durationSec) || samples.length / sampleRate);
+  const fallback = {
+    suggestedStart: 0,
+    suggestedEnd: Number(duration.toFixed(3)),
+    suggestedCrossfade: 80,
+    suggestionNote: 'Cały utwór (fallback)',
+  };
+
+  if (!samples || samples.length < sampleRate * 0.2) {
+    return fallback;
+  }
+
+  const zcRadius = Math.floor(sampleRate * 0.02); // ±20 ms
+  const edgeMs = 80;
+  const edgeSamples = Math.floor((edgeMs / 1000) * sampleRate);
+
+  // Krótkie nagrania: cały utwór, snap do zero-crossing
+  if (duration <= 8) {
+    const startIdx = nearestZeroCrossing(samples, 0, zcRadius * 2);
+    const endIdx = nearestZeroCrossing(samples, samples.length - 1, zcRadius * 2);
+    const start = Math.max(0, startIdx / sampleRate);
+    const end = Math.min(duration, Math.max(start + 0.05, endIdx / sampleRate));
+    const corr = normalizedCorrelation(
+      samples,
+      startIdx,
+      Math.max(startIdx, endIdx - edgeSamples),
+      Math.min(edgeSamples, endIdx - startIdx)
+    );
+    const crossfade = corr > 0.7 ? 50 : corr > 0.35 ? 80 : 100;
+    return {
+      suggestedStart: Number(start.toFixed(3)),
+      suggestedEnd: Number(end.toFixed(3)),
+      suggestedCrossfade: crossfade,
+      suggestionNote: 'Cały utwór ze snappowaniem zero-crossing',
+    };
+  }
+
+  const targetLengths = [5, 8, 10, 12, 15, 20, 30].filter((l) => l <= duration);
+  if (targetLengths.length === 0) {
+    targetLengths.push(Math.max(1, duration));
+  }
+
+  // Pomiń ciszę / fade na brzegach (ok. 3% lub max 2 s)
+  const margin = Math.min(2, duration * 0.03);
+  const searchStart = Math.floor(margin * sampleRate);
+  const searchEnd = Math.floor((duration - margin) * sampleRate);
+
+  const hop = Math.max(1, Math.floor(0.2 * sampleRate)); // 200 ms
+  const energyWin = Math.floor(0.05 * sampleRate); // 50 ms
+
+  let best = null;
+
+  for (const loopLen of targetLengths) {
+    const winSamples = Math.floor(loopLen * sampleRate);
+    if (winSamples < energyWin * 4) continue;
+
+    const maxStart = Math.min(searchEnd - winSamples, samples.length - winSamples - 1);
+    if (maxStart <= searchStart) continue;
+
+    for (let i = searchStart; i <= maxStart; i += hop) {
+      const endIdx = i + winSamples;
+
+      // Stabilność energii (niska wariancja RMS)
+      const chunkRms = [];
+      for (let t = i; t + energyWin <= endIdx; t += energyWin) {
+        chunkRms.push(windowRms(samples, t, t + energyWin));
+      }
+      if (chunkRms.length < 2) continue;
+      const meanRms = chunkRms.reduce((a, b) => a + b, 0) / chunkRms.length;
+      if (meanRms < 0.008) continue; // pomiń prawie ciszę
+      let varSum = 0;
+      for (const r of chunkRms) {
+        const d = r - meanRms;
+        varSum += d * d;
+      }
+      const rmsStd = Math.sqrt(varSum / chunkRms.length);
+      const stability = meanRms > 0 ? 1 / (1 + (rmsStd / meanRms) * 4) : 0;
+
+      // Podobieństwo początku i końca (seamless)
+      const corrLen = Math.min(edgeSamples, Math.floor(winSamples / 4));
+      const corr = normalizedCorrelation(samples, i, endIdx - corrLen, corrLen);
+
+      // Cichsze krawędzie = mniej trzasków
+      const edgeEnergy =
+        (windowRms(samples, i, i + Math.min(edgeSamples, winSamples)) +
+          windowRms(samples, endIdx - Math.min(edgeSamples, winSamples), endIdx)) /
+        2;
+      const edgeScore = 1 / (1 + edgeEnergy * 8);
+
+      // Preferuj dłuższe pętle lekko
+      const lengthBonus = (loopLen / 30) * 0.15;
+
+      const score = stability * 0.35 + Math.max(0, corr) * 0.45 + edgeScore * 0.15 + lengthBonus;
+
+      if (!best || score > best.score) {
+        best = { startIdx: i, endIdx, score, corr, loopLen, meanRms };
+      }
+    }
+  }
+
+  if (!best) {
+    // Środkowy fragment 10 s lub cały utwór
+    const len = Math.min(10, duration);
+    const midStart = Math.max(0, (duration - len) / 2);
+    best = {
+      startIdx: Math.floor(midStart * sampleRate),
+      endIdx: Math.floor((midStart + len) * sampleRate),
+      score: 0,
+      corr: 0,
+      loopLen: len,
+    };
+  }
+
+  const snappedStart = nearestZeroCrossing(samples, best.startIdx, zcRadius);
+  let snappedEnd = nearestZeroCrossing(samples, best.endIdx, zcRadius);
+  if (snappedEnd <= snappedStart + Math.floor(0.5 * sampleRate)) {
+    snappedEnd = Math.min(samples.length - 1, snappedStart + Math.floor(best.loopLen * sampleRate));
+  }
+
+  const suggestedStart = Number((snappedStart / sampleRate).toFixed(3));
+  const suggestedEnd = Number(Math.min(duration, snappedEnd / sampleRate).toFixed(3));
+
+  let suggestedCrossfade = 80;
+  if (best.corr > 0.75) suggestedCrossfade = 50;
+  else if (best.corr > 0.45) suggestedCrossfade = 70;
+  else if (best.corr < 0.15) suggestedCrossfade = 100;
+
+  // Dopasuj crossfade do długości segmentu
+  const segLen = suggestedEnd - suggestedStart;
+  const maxCf = Math.max(20, Math.floor((segLen / 2 - 0.02) * 1000));
+  suggestedCrossfade = Math.min(suggestedCrossfade, maxCf, 100);
+
+  return {
+    suggestedStart,
+    suggestedEnd,
+    suggestedCrossfade,
+    suggestionNote: `Stabilny fragment ~${segLen.toFixed(1)} s (zero-crossing, score ${best.score.toFixed(2)})`,
+  };
+}
+
+/** Pełna ścieżka: dekoduj → analizuj → posprzątaj. */
+async function suggestBestLoop(inputPath, durationSec) {
+  const tmpPcm = path.join(UPLOADS_DIR, `${uuidv4()}_analyze.pcm`);
+  try {
+    await extractMonoPcm(inputPath, tmpPcm);
+    const buf = await fs.promises.readFile(tmpPcm);
+    const samples = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2));
+    return analyzeSamplesForLoop(samples, ANALYSIS_RATE, durationSec);
+  } finally {
+    safeUnlink(tmpPcm);
+  }
+}
+
 /**
  * Generuje płynną pętlę audio:
  * 1) wycina segment → tymczasowy WAV
@@ -187,6 +432,18 @@ app.post('/api/upload', upload.single('audio'), async (req, res) => {
 
     const meta = await probeAudio(req.file.path);
 
+    let suggestion = {
+      suggestedStart: 0,
+      suggestedEnd: Number(meta.duration.toFixed(3)),
+      suggestedCrossfade: 80,
+      suggestionNote: 'Domyślnie cały utwór',
+    };
+    try {
+      suggestion = await suggestBestLoop(req.file.path, meta.duration);
+    } catch (analyseErr) {
+      console.warn('Analiza pętli nie powiodła się, użyto fallback:', analyseErr.message);
+    }
+
     res.json({
       id: path.basename(req.file.filename, path.extname(req.file.filename)),
       filename: req.file.filename,
@@ -197,6 +454,10 @@ app.post('/api/upload', upload.single('audio'), async (req, res) => {
       channels: meta.channels,
       sampleRate: meta.sampleRate,
       codec: meta.codec,
+      suggestedStart: suggestion.suggestedStart,
+      suggestedEnd: suggestion.suggestedEnd,
+      suggestedCrossfade: suggestion.suggestedCrossfade,
+      suggestionNote: suggestion.suggestionNote || null,
     });
   } catch (err) {
     if (req.file) safeUnlink(req.file.path);
@@ -218,6 +479,26 @@ app.get('/api/meta/:filename', async (req, res) => {
     res.json(meta);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** Ponowna propozycja najlepszej pętli dla już wgranego pliku. */
+app.get('/api/suggest/:filename', async (req, res) => {
+  try {
+    const safeName = path.basename(req.params.filename);
+    const filePath = path.join(UPLOADS_DIR, safeName);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Plik nie istnieje.' });
+    }
+    const meta = await probeAudio(filePath);
+    const suggestion = await suggestBestLoop(filePath, meta.duration);
+    res.json({
+      duration: meta.duration,
+      ...suggestion,
+    });
+  } catch (err) {
+    console.error('Suggest error:', err);
+    res.status(500).json({ error: err.message || 'Błąd analizy pętli.' });
   }
 });
 

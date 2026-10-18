@@ -259,12 +259,17 @@
         <div class="region" id="region"></div>
         <div class="playhead" id="playhead"></div>
       </div>
-      <audio id="player" controls preload="metadata" class="mb-4"></audio>
+      <audio id="player" controls preload="metadata" class="mb-3"></audio>
+      <p id="suggestInfo" class="text-sm muted mb-4 hidden">
+        Algorytm sugeruje pętlę od <span id="suggestRange" class="font-mono">—</span>
+        <span id="suggestExtra" class="block text-xs mt-0.5"></span>
+      </p>
 
       <div class="flex flex-wrap gap-2 mb-5">
         <button type="button" class="btn btn-ghost text-sm" id="playRegionBtn" title="Odtwórz wybrany fragment">▶ Fragment</button>
         <button type="button" class="btn btn-ghost text-sm" id="loopPreviewBtn" title="Zapętlaj fragment w przeglądarce">↻ Podgląd pętli</button>
         <button type="button" class="btn btn-ghost text-sm" id="stopBtn">Stop</button>
+        <button type="button" class="btn btn-ghost text-sm" id="autoSuggestBtn" title="Przywróć sugerowaną pętlę">🔮 Zaproponuj najlepszą pętlę (Auto)</button>
       </div>
 
       <div class="grid sm:grid-cols-2 gap-4 mb-4">
@@ -364,6 +369,11 @@
         audioBuffer: null,
         uploading: false,
         generating: false,
+        suggesting: false,
+        suggestedStart: 0,
+        suggestedEnd: 0,
+        suggestedCrossfade: 80,
+        suggestionNote: null,
       };
 
       const player = $('player');
@@ -452,6 +462,36 @@
         if (state.crossfadeMs > maxCf) {
           state.crossfadeMs = Math.max(0, maxCf);
         }
+      }
+
+      function updateSuggestInfo() {
+        const box = $('suggestInfo');
+        if (!state.filename || state.suggestedEnd <= state.suggestedStart) {
+          box.classList.add('hidden');
+          return;
+        }
+        box.classList.remove('hidden');
+        $('suggestRange').textContent =
+          `${formatTime(state.suggestedStart)} do ${formatTime(state.suggestedEnd)} s` +
+          ` · crossfade ${state.suggestedCrossfade} ms`;
+        $('suggestExtra').textContent = state.suggestionNote
+          ? `AI / Algorytm: ${state.suggestionNote}`
+          : 'AI / Algorytm sugeruje powyższy fragment jako najlepszą pętlę.';
+      }
+
+      function applySuggestion(suggestion) {
+        if (!suggestion) return;
+        state.suggestedStart = Number(suggestion.suggestedStart) || 0;
+        state.suggestedEnd = Number(suggestion.suggestedEnd) || state.duration;
+        state.suggestedCrossfade = Number(suggestion.suggestedCrossfade) || 80;
+        if (suggestion.suggestionNote) state.suggestionNote = suggestion.suggestionNote;
+
+        state.start = state.suggestedStart;
+        state.end = state.suggestedEnd;
+        state.crossfadeMs = state.suggestedCrossfade;
+        clampRegion();
+        syncSlidersFromState();
+        updateSuggestInfo();
       }
 
       // --- Waveform (prosty peaki z AudioContext) ---
@@ -583,10 +623,8 @@
             state.filename = data.filename;
             state.originalName = data.originalName;
             state.duration = data.duration;
-            state.start = 0;
-            state.end = data.duration;
-            state.crossfadeMs = 50;
             state.repeats = 1;
+            state.suggestionNote = data.suggestionNote || null;
 
             $('dropIdle').classList.add('hidden');
             $('dropLoaded').classList.remove('hidden');
@@ -598,7 +636,13 @@
             await player.load?.();
 
             enableEditor(true);
-            syncSlidersFromState();
+
+            applySuggestion({
+              suggestedStart: data.suggestedStart ?? 0,
+              suggestedEnd: data.suggestedEnd ?? data.duration,
+              suggestedCrossfade: data.suggestedCrossfade ?? 80,
+              suggestionNote: data.suggestionNote,
+            });
 
             // Peaki waveform – osobny odczyt pliku lokalnego
             const ab = await file.arrayBuffer();
@@ -741,6 +785,38 @@
         player.pause();
         stopLoopPreview();
         player.currentTime = state.start;
+      });
+
+      $('autoSuggestBtn').addEventListener('click', async () => {
+        if (!state.filename || state.suggesting) return;
+        state.suggesting = true;
+        const btn = $('autoSuggestBtn');
+        const prev = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Analizowanie…';
+        $('errorBox').classList.add('hidden');
+        try {
+          const res = await fetch(`/api/suggest/${encodeURIComponent(state.filename)}`);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Błąd analizy');
+          applySuggestion(data);
+        } catch (err) {
+          // Fallback: lokalnie zapisane sugestie z uploadu
+          if (state.suggestedEnd > state.suggestedStart) {
+            applySuggestion({
+              suggestedStart: state.suggestedStart,
+              suggestedEnd: state.suggestedEnd,
+              suggestedCrossfade: state.suggestedCrossfade,
+              suggestionNote: state.suggestionNote,
+            });
+          } else {
+            showError(err.message || 'Nie udało się zaproponować pętli.');
+          }
+        } finally {
+          state.suggesting = false;
+          btn.disabled = false;
+          btn.textContent = prev;
+        }
       });
 
       // --- Generate ---
