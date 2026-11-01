@@ -335,6 +335,12 @@
               suggestionNote: data.longestSuggestionNote || 'Najdłuższy fragment na pętlę',
             };
 
+            const seamEl = $('seamInfo');
+            if (seamEl) {
+              seamEl.classList.add('hidden');
+              seamEl.textContent = '';
+            }
+
             $('dropIdle').classList.add('hidden');
             $('dropLoaded').classList.remove('hidden');
             $('fileName').textContent = data.originalName;
@@ -508,6 +514,50 @@
         requestSuggestion('longest');
       });
 
+      function updateSeamInfo(data) {
+        const el = $('seamInfo');
+        if (!el || !data) {
+          if (el) el.classList.add('hidden');
+          return;
+        }
+        el.classList.remove('hidden');
+        el.textContent =
+          `Szew: ${data.seamLabel || '—'} (${data.seamScore ?? '—'}/100) · ` +
+          `${formatTime(data.suggestedStart)} → ${formatTime(data.suggestedEnd)} s`;
+      }
+
+      $('refineSeamBtn').addEventListener('click', async () => {
+        if (!state.filename || state.suggesting) return;
+        state.suggesting = true;
+        const btn = $('refineSeamBtn');
+        const prev = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Dopasowywanie…';
+        $('errorBox').classList.add('hidden');
+        try {
+          const res = await fetch('/api/refine-seam', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              filename: state.filename,
+              start: state.start,
+              end: state.end,
+              searchMs: 45,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Błąd dopasowania szwu');
+          applySuggestion(data, state.suggestionMode || 'best');
+          updateSeamInfo(data);
+        } catch (err) {
+          showError(err.message || 'Nie udało się dopasować szwu.');
+        } finally {
+          state.suggesting = false;
+          btn.disabled = false;
+          btn.textContent = prev;
+        }
+      });
+
       // --- Generate ---
       $('generateBtn').addEventListener('click', async () => {
         if (!state.filename || state.generating) return;
@@ -522,6 +572,7 @@
 
         const format = document.querySelector('input[name="format"]:checked')?.value || 'ogg';
         const normalize = Boolean($('normalizeToggle')?.checked);
+        const pingPong = Boolean($('pingPongToggle')?.checked);
 
         // Symulowany postęp (ffmpeg nie streamuje % łatwo przez HTTP)
         let fake = 5;
@@ -529,9 +580,10 @@
           fake = Math.min(90, fake + Math.random() * 8);
           $('genBar').style.width = fake + '%';
           $('genPct').textContent = Math.round(fake) + '%';
-          if (fake < 35) $('genStatus').textContent = 'Wycinanie segmentu…';
-          else if (fake < 55) $('genStatus').textContent = 'Crossfade…';
-          else if (fake < 75 && normalize) $('genStatus').textContent = 'Normalizacja LUFS…';
+          if (fake < 30) $('genStatus').textContent = 'Wycinanie segmentu…';
+          else if (fake < 50) $('genStatus').textContent = 'Crossfade…';
+          else if (fake < 65 && pingPong) $('genStatus').textContent = 'Ping-pong…';
+          else if (fake < 80 && normalize) $('genStatus').textContent = 'Normalizacja LUFS…';
           else $('genStatus').textContent = 'Kodowanie…';
         }, 400);
 
@@ -547,6 +599,7 @@
               format,
               repeats: state.repeats,
               normalize,
+              pingPong,
             }),
           });
           const data = await res.json();
@@ -559,9 +612,10 @@
 
           $('resultBox').classList.remove('hidden');
           const normLabel = data.normalize ? ' · LUFS ON' : ' · LUFS OFF';
+          const pingLabel = data.pingPong ? ' · ping-pong' : '';
           const srLabel = data.sampleRate ? ` · ${data.sampleRate} Hz` : ' · 48000 Hz';
           $('resultMeta').textContent =
-            `${data.filename} · ${formatDuration(data.duration)}${srLabel} · crossfade ${data.crossfadeMs} ms · ${data.repeats}×${normLabel}`;
+            `${data.filename} · ${formatDuration(data.duration)}${srLabel} · crossfade ${data.crossfadeMs} ms · ${data.repeats}×${pingLabel}${normLabel}`;
           const link = $('downloadLink');
           link.href = data.downloadUrl;
           link.download = data.filename;

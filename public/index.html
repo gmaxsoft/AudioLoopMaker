@@ -96,7 +96,9 @@
         <button type="button" class="btn btn-ghost text-sm" id="stopBtn">Stop</button>
         <button type="button" class="btn btn-ghost text-sm" id="autoSuggestBtn" title="Najlepsza jakościowo pętla (stabilność + seamless)">🔮 Najlepsza pętla (Auto)</button>
         <button type="button" class="btn btn-ghost text-sm" id="longestSuggestBtn" title="Najdłuższy fragment spełniający próg jakości pętli">📏 Najdłuższy fragment</button>
+        <button type="button" class="btn btn-ghost text-sm" id="refineSeamBtn" title="Mikro-korekta Start/End pod płynniejszy szew (zero-crossing)">🔧 Dopasuj szew</button>
       </div>
+      <p id="seamInfo" class="text-xs muted mb-4 hidden"></p>
 
       <div class="grid sm:grid-cols-2 gap-4 mb-4">
         <div>
@@ -171,6 +173,29 @@
             </span>
             <span class="muted text-xs block mt-1">
               ON domyślnie · EBU R128 (loudnorm I=−14, LRA=11, TP=−1.5) · bez clippingu
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class="mt-3">
+        <div class="label">Tryb ping-pong</div>
+        <label class="toggle-row cursor-pointer" for="pingPongToggle">
+          <span class="toggle">
+            <input type="checkbox" id="pingPongToggle" />
+            <span class="toggle-slider" aria-hidden="true"></span>
+          </span>
+          <span>
+            <span class="font-medium text-sm">
+              Ping-pong (forward + reverse)
+              <span
+                class="hint-tip"
+                title="Dokłada odwrócony przebieg po fragmencie. Płynniejszy zwrot w środku — dobre dla ambientu/tekstur; druga połowa gra do tyłu."
+                aria-label="Informacja o ping-pong"
+              >?</span>
+            </span>
+            <span class="muted text-xs block mt-1">
+              OFF domyślnie · opcjonalnie przy trudnych szwach · potem działają powtórzenia
             </span>
           </span>
         </label>

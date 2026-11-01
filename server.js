@@ -349,6 +349,99 @@ async function suggestBestLoop(inputPath, durationSec) {
   return both.best;
 }
 
+/**
+ * Mikro-korekta szwu pętli: w oknie ±searchMs przesuwa Start/End
+ * do zero-crossing z najmniejszą nieciągłością amplitudy i „pędu” fali.
+ * Długość segmentu zostaje w przybliżeniu zachowana (± drobne różnice ZC).
+ */
+function refineSeamFromSamples(samples, sampleRate, startSec, endSec, searchMs = 40) {
+  const duration = samples.length / sampleRate;
+  let start = Math.max(0, Number(startSec) || 0);
+  let end = Math.min(duration, Number(endSec) || duration);
+  if (!(end > start + 0.05)) {
+    return {
+      suggestedStart: Number(start.toFixed(3)),
+      suggestedEnd: Number(end.toFixed(3)),
+      suggestedCrossfade: 140,
+      seamScore: 0,
+      seamLabel: 'słaby',
+      suggestionNote: 'Za krótki fragment do dopasowania szwu',
+    };
+  }
+
+  const searchSamples = Math.max(8, Math.floor((searchMs / 1000) * sampleRate));
+  const start0 = Math.floor(start * sampleRate);
+  const end0 = Math.floor(end * sampleRate);
+  const minLen = Math.floor(0.05 * sampleRate);
+
+  function seamCost(sIdx, eIdx) {
+    if (eIdx <= sIdx + minLen || eIdx >= samples.length || sIdx < 0) return Infinity;
+    const a = samples[sIdx] / 32768;
+    const b = samples[eIdx - 1] / 32768;
+    const jump = Math.abs(b - a);
+    const dStart = sIdx + 1 < samples.length ? (samples[sIdx + 1] - samples[sIdx]) / 32768 : 0;
+    const dEnd =
+      eIdx >= 2 ? (samples[eIdx - 1] - samples[eIdx - 2]) / 32768 : 0;
+    // Przy zapętleniu pęd na końcu powinien przejść w pęd na początku
+    const slopeJump = Math.abs(dEnd - dStart);
+    const nearZero = (Math.abs(a) + Math.abs(b)) * 0.5;
+    return jump * 1.2 + slopeJump * 0.8 + nearZero * 0.35;
+  }
+
+  let best = { s: start0, e: end0, cost: seamCost(start0, end0) };
+
+  // 1) Wspólne przesunięcie (rotacja fazy) – zachowuje długość
+  const len = end0 - start0;
+  for (let o = -searchSamples; o <= searchSamples; o++) {
+    const s = start0 + o;
+    const e = s + len;
+    if (s < 0 || e > samples.length) continue;
+    const sZ = nearestZeroCrossing(samples, s, Math.min(32, searchSamples));
+    const eZ = nearestZeroCrossing(samples, e, Math.min(32, searchSamples));
+    const cost = seamCost(sZ, eZ);
+    if (cost < best.cost) best = { s: sZ, e: eZ, cost };
+  }
+
+  // 2) Niezależny mikro-nudge Start/End (rzadszy krok)
+  const step = Math.max(1, Math.floor(searchSamples / 20));
+  for (let ds = -searchSamples; ds <= searchSamples; ds += step) {
+    for (let de = -searchSamples; de <= searchSamples; de += step) {
+      const s = nearestZeroCrossing(samples, start0 + ds, 16);
+      const e = nearestZeroCrossing(samples, end0 + de, 16);
+      if (e - s < minLen) continue;
+      const cost = seamCost(s, e);
+      if (cost < best.cost) best = { s, e, cost };
+    }
+  }
+
+  const refinedStart = Number((best.s / sampleRate).toFixed(3));
+  const refinedEnd = Number((best.e / sampleRate).toFixed(3));
+  // Niższy cost = lepszy szew; mapujemy na 0–100
+  const seamScore = Math.max(0, Math.min(100, Math.round(100 - best.cost * 120)));
+  const seamLabel = seamScore >= 70 ? 'dobry' : seamScore >= 40 ? 'średni' : 'słaby';
+
+  return {
+    suggestedStart: refinedStart,
+    suggestedEnd: refinedEnd,
+    suggestedCrossfade: 140,
+    seamScore,
+    seamLabel,
+    suggestionNote: `Szew dopasowany (${seamLabel}, ${seamScore}/100)`,
+  };
+}
+
+async function refineLoopSeam(inputPath, startSec, endSec, searchMs = 40) {
+  const tmpPcm = path.join(UPLOADS_DIR, `${uuidv4()}_seam.pcm`);
+  try {
+    await extractMonoPcm(inputPath, tmpPcm);
+    const buf = await fs.promises.readFile(tmpPcm);
+    const samples = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2));
+    return refineSeamFromSamples(samples, ANALYSIS_RATE, startSec, endSec, searchMs);
+  } finally {
+    safeUnlink(tmpPcm);
+  }
+}
+
 /** Filtr EBU R128 – wyrównanie głośności do poziomu streamingowego. */
 const LOUDNORM_FILTER = 'loudnorm=I=-14:LRA=11:TP=-1.5';
 
@@ -372,6 +465,7 @@ async function generateLoop({
   format,
   repeats,
   normalize = true,
+  pingPong = false,
 }) {
   const duration = endSec - startSec;
   const crossfadeSec = Math.max(0, Number(crossfadeMs) || 0) / 1000;
@@ -379,6 +473,7 @@ async function generateLoop({
   const jobId = uuidv4();
   const tmpSeg = path.join(UPLOADS_DIR, `${jobId}_seg.wav`);
   const tmpLoop = path.join(UPLOADS_DIR, `${jobId}_loop.wav`);
+  const tmpPing = path.join(UPLOADS_DIR, `${jobId}_ping.wav`);
   const tmpRepeated = path.join(UPLOADS_DIR, `${jobId}_rep.wav`);
 
   try {
@@ -420,10 +515,29 @@ async function generateLoop({
       fs.copyFileSync(tmpSeg, tmpLoop);
     }
 
-    let sourceForEncode = tmpLoop;
+    let blockPath = tmpLoop;
+
+    // Ping-pong: forward + odwrócony przebieg (płynny zwrot w środku)
+    if (pingPong) {
+      await new Promise((resolve, reject) => {
+        ffmpeg(tmpLoop)
+          .complexFilter(
+            '[0:a]asplit=2[fwd][r0];[r0]areverse[rev];[fwd][rev]concat=n=2:v=0:a=1[out]'
+          )
+          .outputOptions(['-map', '[out]'])
+          .audioCodec('pcm_s16le')
+          .format('wav')
+          .on('error', reject)
+          .on('end', resolve)
+          .save(tmpPing);
+      });
+      blockPath = tmpPing;
+    }
+
+    let sourceForEncode = blockPath;
 
     if (reps > 1) {
-      const inputs = Array.from({ length: reps }, () => tmpLoop);
+      const inputs = Array.from({ length: reps }, () => blockPath);
       await new Promise((resolve, reject) => {
         const cmd = ffmpeg();
         inputs.forEach((p) => cmd.input(p));
@@ -446,7 +560,6 @@ async function generateLoop({
         cmd = cmd.audioFilters(LOUDNORM_FILTER);
       }
       if (format === 'ogg') {
-        // Vorbis @ 48 kHz – standard pod Android / AudioTrack
         cmd = cmd
           .audioCodec('libvorbis')
           .audioQuality(4)
@@ -466,10 +579,12 @@ async function generateLoop({
       duration: outMeta.duration,
       normalized: Boolean(normalize),
       sampleRate: outMeta.sampleRate || OUTPUT_SAMPLE_RATE,
+      pingPong: Boolean(pingPong),
     };
   } finally {
     safeUnlink(tmpSeg);
     safeUnlink(tmpLoop);
+    safeUnlink(tmpPing);
     safeUnlink(tmpRepeated);
   }
 }
@@ -542,6 +657,35 @@ app.get('/api/meta/:filename', async (req, res) => {
   }
 });
 
+/** Mikro-korekta Start/End wokół obecnego regionu (lepszy szew pętli). */
+app.post('/api/refine-seam', async (req, res) => {
+  try {
+    const { filename, start, end, searchMs = 40 } = req.body || {};
+    if (!filename) {
+      return res.status(400).json({ error: 'Brak nazwy pliku źródłowego.' });
+    }
+    const safeName = path.basename(filename);
+    const filePath = path.join(UPLOADS_DIR, safeName);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Plik źródłowy nie istnieje.' });
+    }
+    const meta = await probeAudio(filePath);
+    const startSec = Math.max(0, Number(start) || 0);
+    const endSec = Math.min(meta.duration, Number(end) || meta.duration);
+    if (!(endSec > startSec)) {
+      return res.status(400).json({ error: 'Czas End musi być większy niż Start.' });
+    }
+    const refined = await refineLoopSeam(filePath, startSec, endSec, Number(searchMs) || 40);
+    res.json({
+      duration: meta.duration,
+      ...refined,
+    });
+  } catch (err) {
+    console.error('Refine seam error:', err);
+    res.status(500).json({ error: err.message || 'Błąd dopasowania szwu.' });
+  }
+});
+
 /**
  * Propozycja pętli dla już wgranego pliku.
  * Query: ?mode=best (domyślnie) | mode=longest
@@ -579,6 +723,7 @@ app.post('/api/generate', async (req, res) => {
     format = 'ogg',
     repeats = 1,
     normalize = true,
+    pingPong = false,
   } = req.body || {};
 
   try {
@@ -608,6 +753,7 @@ app.post('/api/generate', async (req, res) => {
 
     // Domyślnie włączona; wyłączenie tylko przy jawnej wartości false
     const doNormalize = !(normalize === false || normalize === 'false' || normalize === 0 || normalize === '0');
+    const doPingPong = pingPong === true || pingPong === 'true' || pingPong === 1 || pingPong === '1';
 
     const outFormat = format === 'wav' ? 'wav' : 'ogg';
     const outName = `loop_${uuidv4()}.${outFormat}`;
@@ -622,6 +768,7 @@ app.post('/api/generate', async (req, res) => {
       format: outFormat,
       repeats: Number(repeats) || 1,
       normalize: doNormalize,
+      pingPong: doPingPong,
     });
 
     res.json({
@@ -634,6 +781,7 @@ app.post('/api/generate', async (req, res) => {
       crossfadeMs: Number(crossfadeMs) || 0,
       repeats: Math.max(1, Math.min(100, Math.floor(Number(repeats) || 1))),
       normalize: result.normalized,
+      pingPong: result.pingPong,
     });
   } catch (err) {
     console.error('Generate error:', err);
