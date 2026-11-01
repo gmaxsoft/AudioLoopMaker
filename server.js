@@ -352,6 +352,9 @@ async function suggestBestLoop(inputPath, durationSec) {
 /** Filtr EBU R128 – wyrównanie głośności do poziomu streamingowego. */
 const LOUDNORM_FILTER = 'loudnorm=I=-14:LRA=11:TP=-1.5';
 
+/** Docelowa częstotliwość próbkowania (Android / gry – unika resample w runtime). */
+const OUTPUT_SAMPLE_RATE = 48000;
+
 /**
  * Generuje płynną pętlę audio:
  * 1) wycina segment → tymczasowy WAV
@@ -383,6 +386,7 @@ async function generateLoop({
       ffmpeg(inputPath)
         .setStartTime(startSec)
         .duration(duration)
+        .audioFrequency(OUTPUT_SAMPLE_RATE)
         .audioCodec('pcm_s16le')
         .format('wav')
         .on('error', reject)
@@ -437,20 +441,32 @@ async function generateLoop({
     }
 
     await new Promise((resolve, reject) => {
-      let cmd = ffmpeg(sourceForEncode);
+      let cmd = ffmpeg(sourceForEncode).audioFrequency(OUTPUT_SAMPLE_RATE);
       if (normalize) {
         cmd = cmd.audioFilters(LOUDNORM_FILTER);
       }
       if (format === 'ogg') {
-        cmd = cmd.audioCodec('libvorbis').audioQuality(4).format('ogg');
+        // Vorbis @ 48 kHz – standard pod Android / AudioTrack
+        cmd = cmd
+          .audioCodec('libvorbis')
+          .audioQuality(4)
+          .outputOptions(['-ar', String(OUTPUT_SAMPLE_RATE)])
+          .format('ogg');
       } else {
-        cmd = cmd.audioCodec('pcm_s16le').format('wav');
+        cmd = cmd
+          .audioCodec('pcm_s16le')
+          .outputOptions(['-ar', String(OUTPUT_SAMPLE_RATE)])
+          .format('wav');
       }
       cmd.on('error', reject).on('end', resolve).save(outputPath);
     });
 
     const outMeta = await probeAudio(outputPath);
-    return { duration: outMeta.duration, normalized: Boolean(normalize) };
+    return {
+      duration: outMeta.duration,
+      normalized: Boolean(normalize),
+      sampleRate: outMeta.sampleRate || OUTPUT_SAMPLE_RATE,
+    };
   } finally {
     safeUnlink(tmpSeg);
     safeUnlink(tmpLoop);
@@ -614,6 +630,7 @@ app.post('/api/generate', async (req, res) => {
       filename: outName,
       duration: result.duration,
       format: outFormat,
+      sampleRate: result.sampleRate || OUTPUT_SAMPLE_RATE,
       crossfadeMs: Number(crossfadeMs) || 0,
       repeats: Math.max(1, Math.min(100, Math.floor(Number(repeats) || 1))),
       normalize: result.normalized,

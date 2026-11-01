@@ -559,8 +559,9 @@
 
           $('resultBox').classList.remove('hidden');
           const normLabel = data.normalize ? ' · LUFS ON' : ' · LUFS OFF';
+          const srLabel = data.sampleRate ? ` · ${data.sampleRate} Hz` : ' · 48000 Hz';
           $('resultMeta').textContent =
-            `${data.filename} · ${formatDuration(data.duration)} · crossfade ${data.crossfadeMs} ms · ${data.repeats}×${normLabel}`;
+            `${data.filename} · ${formatDuration(data.duration)}${srLabel} · crossfade ${data.crossfadeMs} ms · ${data.repeats}×${normLabel}`;
           const link = $('downloadLink');
           link.href = data.downloadUrl;
           link.download = data.filename;
