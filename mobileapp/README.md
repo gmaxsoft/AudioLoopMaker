@@ -35,12 +35,32 @@ Physical device: use your PC LAN IP, e.g. `http://192.168.1.20:3000`.
 
 ## Run (development)
 
-AdMob and IAP need a **development build** (not Expo Go):
+### Windows notes (important)
 
-```bash
-npx expo prebuild --platform android
+1. Set Android SDK on PATH (fixes `spawn emulator ENOENT`):
+
+```powershell
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:Path = "$env:ANDROID_HOME\emulator;$env:ANDROID_HOME\platform-tools;$env:Path"
+```
+
+2. Long path limit (260 chars): use a short junction + short Gradle home:
+
+```powershell
+cmd /c "mklink /J C:\alm D:\Projekty\AudioLoopMaker\mobileapp"
+$env:GRADLE_USER_HOME = "C:\g"
+cd C:\alm
+```
+
+3. Start an AVD (example: `medsound_api35`), then build:
+
+```powershell
+emulator -avd medsound_api35
+# wait until device is online
 npx expo run:android
 ```
+
+AdMob and IAP need a **development build** (not Expo Go).
 
 Expo Go (UI / API only; ads & billing mocked / placeholders):
 

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, StatusBar, StyleSheet, View } from 'react-native';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Platform, StatusBar, StyleSheet, View } from 'react-native';
 import './src/i18n';
 import { loadSavedLocale } from './src/i18n';
 import { PremiumProvider } from './src/context/PremiumContext';
@@ -22,14 +21,12 @@ export default function App() {
   }
 
   return (
-    <SafeAreaProvider>
-      <PremiumProvider>
-        <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
-          <StatusBar barStyle="light-content" />
-          <HomeScreen />
-        </SafeAreaView>
-      </PremiumProvider>
-    </SafeAreaProvider>
+    <PremiumProvider>
+      <View style={styles.root}>
+        <StatusBar barStyle="light-content" backgroundColor="#0b0e12" />
+        <HomeScreen />
+      </View>
+    </PremiumProvider>
   );
 }
 
@@ -40,5 +37,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  root: { flex: 1, backgroundColor: '#0b0e12' },
+  root: {
+    flex: 1,
+    backgroundColor: '#0b0e12',
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight ?? 0 : 0,
+  },
 });
