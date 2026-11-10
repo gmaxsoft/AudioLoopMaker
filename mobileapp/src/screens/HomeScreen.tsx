@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import { useTranslation } from 'react-i18next';
 import { AdBanner } from '../components/AdBanner';
 import { PremiumModal } from '../components/PremiumModal';
@@ -65,7 +65,8 @@ export function HomeScreen() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [resultMeta, setResultMeta] = useState<string | null>(null);
 
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const playerRef = useRef<AudioPlayer | null>(null);
+  const loopTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sourceUrlRef = useRef<string | null>(null);
 
   const segmentInfo = useMemo(() => {
@@ -76,14 +77,18 @@ export function HomeScreen() {
   }, [start, end, crossfadeMs, repeats, pingPong, t]);
 
   const unloadSound = useCallback(async () => {
-    if (soundRef.current) {
+    if (loopTimerRef.current) {
+      clearInterval(loopTimerRef.current);
+      loopTimerRef.current = null;
+    }
+    if (playerRef.current) {
       try {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
+        playerRef.current.pause();
+        playerRef.current.remove();
       } catch {
         /* ignore */
       }
-      soundRef.current = null;
+      playerRef.current = null;
     }
   }, []);
 
@@ -210,35 +215,37 @@ export function HomeScreen() {
   const playFragment = async () => {
     if (!sourceUrlRef.current) return;
     await unloadSound();
-    await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-    const { sound } = await Audio.Sound.createAsync(
-      { uri: sourceUrlRef.current },
-      { shouldPlay: true, positionMillis: Math.floor(start * 1000) }
-    );
-    soundRef.current = sound;
-    sound.setOnPlaybackStatusUpdate((st) => {
-      if (!st.isLoaded) return;
-      if ((st.positionMillis ?? 0) >= end * 1000) {
-        void sound.stopAsync();
+    await setAudioModeAsync({ playsInSilentMode: true });
+    const player = createAudioPlayer({ uri: sourceUrlRef.current });
+    playerRef.current = player;
+    await player.seekTo(start);
+    player.play();
+    loopTimerRef.current = setInterval(() => {
+      if (!playerRef.current?.playing) return;
+      if (playerRef.current.currentTime >= end) {
+        playerRef.current.pause();
+        if (loopTimerRef.current) {
+          clearInterval(loopTimerRef.current);
+          loopTimerRef.current = null;
+        }
       }
-    });
+    }, 50);
   };
 
   const previewLoop = async () => {
     if (!sourceUrlRef.current) return;
     await unloadSound();
-    await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-    const { sound } = await Audio.Sound.createAsync(
-      { uri: sourceUrlRef.current },
-      { shouldPlay: true, positionMillis: Math.floor(start * 1000), isLooping: false }
-    );
-    soundRef.current = sound;
-    sound.setOnPlaybackStatusUpdate((st) => {
-      if (!st.isLoaded || !st.isPlaying) return;
-      if ((st.positionMillis ?? 0) >= end * 1000 - 20) {
-        void sound.setPositionAsync(Math.floor(start * 1000));
+    await setAudioModeAsync({ playsInSilentMode: true });
+    const player = createAudioPlayer({ uri: sourceUrlRef.current });
+    playerRef.current = player;
+    await player.seekTo(start);
+    player.play();
+    loopTimerRef.current = setInterval(() => {
+      if (!playerRef.current?.playing) return;
+      if (playerRef.current.currentTime >= end - 0.02) {
+        void playerRef.current.seekTo(start);
       }
-    });
+    }, 40);
   };
 
   const onGenerate = async () => {

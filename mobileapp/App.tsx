@@ -23,7 +23,7 @@ export default function App() {
   return (
     <PremiumProvider>
       <View style={styles.root}>
-        <StatusBar barStyle="light-content" backgroundColor="#0b0e12" />
+        <StatusBar barStyle="light-content" />
         <HomeScreen />
       </View>
     </PremiumProvider>
