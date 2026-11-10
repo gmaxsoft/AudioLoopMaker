@@ -9,3 +9,7 @@ Thumbs.db
 .env
 .idea/
 .vscode/
+mobileapp/android/
+mobileapp/ios/
+mobileapp/.expo/
+mobileapp/dist/

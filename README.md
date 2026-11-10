@@ -33,6 +33,17 @@ npm start
 
 Otwórz w przeglądarce: [http://localhost:3000](http://localhost:3000)
 
+## Aplikacja mobilna (Android)
+
+Katalog [`mobileapp/`](mobileapp/) — **Expo / React Native**:
+
+- język domyślny **English** + **Polski**
+- reklamy **AdMob** (wersja darmowa)
+- zakup jednorazowy **Premium $3.99** (normalizacja LUFS, ping-pong, bez limitu 10 MB, bez reklam)
+- przetwarzanie audio przez ten sam backend (`server.js`)
+
+Szczegóły: [mobileapp/README.md](mobileapp/README.md).
+
 ## Jak korzystać
 
 1. **Wybierz plik audio** (przeciągnij i upuść lub kliknij) — MP3, WAV, OGG, FLAC i inne.

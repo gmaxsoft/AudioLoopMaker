@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Audio Loop Maker",
+    "slug": "audio-loop-maker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "audioloopmaker",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.maxsoft.audioloopmaker",
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": []
+      }
+    },
+    "android": {
+      "package": "com.maxsoft.audioloopmaker",
+      "adaptiveIcon": {
+        "backgroundColor": "#0b0e12",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "com.android.vending.BILLING"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-localization",
+      "expo-dev-client",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "replace-with-eas-project-id"
+      }
+    }
+  }
+}
